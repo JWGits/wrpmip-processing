@@ -1,6 +1,6 @@
 # wrpmip-processing
 
-Python code to parallel-process WrPMIP simulation outputs using xarray and dask libraries.
+Python code to parallel-process the Warming Permafrost Model Intercomparison Project (WrPMIP) simulation outputs using xarray and dask libraries.
 
 ## General workflow
 
