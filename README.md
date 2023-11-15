@@ -4,7 +4,7 @@ Python code to parallel-process WrPMIP simulation outputs using xarray and dask 
 
 ## General workflow
 
-This code is developed for HPC systems utilizing the Slurm scheduler (though other HPC/scheduler combinations that utilize Openmpi should work). An Sbatch call is made with the bash script of interest and associated JSON configuration file.  
+This code is developed for HPC systems utilizing the Slurm scheduler (though other HPC/scheduler combinations that utilize Openmpi should work with bash script modifications). An Sbatch call is made with the bash script of interest and associated JSON configuration file.  
 
 ```
 sbatch xr_regional.bash config_models.json
