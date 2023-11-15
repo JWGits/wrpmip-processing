@@ -1,0 +1,47 @@
+{
+	"model_name": "ORCHIDEE-MICT",
+	"b1_dir": "/projects/warpmip/shared/model_outputs/ORCHIDEE/ORCHIDEE-MICT/hist/", 
+	"b1_str": "Annual",
+	"b2_dir": "/projects/warpmip/shared/model_outputs/ORCHIDEE/ORCHIDEE-MICT/baseline/", 
+	"b2_str": "baseline",
+	"otc_dir": "/projects/warpmip/shared/model_outputs/ORCHIDEE/ORCHIDEE-MICT/Aerodyn125/",
+	"otc_str": "Aerodyn125",
+	"sf_dir": "/projects/warpmip/shared/model_outputs/ORCHIDEE/ORCHIDEE-MICT/SnowCondct02/",
+	"sf_str": "SnowCondct02",
+	"merge_type": "time",
+	"has_b1": "True",
+	"has_b2": "True",
+	"has_otc": "True",
+	"has_sf": "True",
+	"output_dir": "/projects/warpmip/shared/processed_outputs/",
+	"subset_vars": [
+		"TotalResp",
+		"SoilTemp"
+	],
+	"rename_subset": {
+		"latitude": "lat",
+		"longitude": "lon",
+		"nsoil": "SoilDepth" 
+	},
+	"data_units": {
+	},
+	"coords_units": {},
+	"soil_depths": [],
+	"nc_read": {
+		"engine": "netcdf4",
+		"b1_chunks": {
+			"time": 40
+		},
+		"b2_chunks": {
+			"time": 20  
+		}
+	},
+	"nc_write": {
+		"engine": "netcdf4",
+		"zlib": "TRUE",
+		"complevel": 0,
+		"shuffle": "FALSE",
+		"fillvalue": -9999,		
+		"format": "NETCDF4_CLASSIC"
+	}
+}

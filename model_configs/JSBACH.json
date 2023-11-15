@@ -1,0 +1,48 @@
+{
+	"model_name": "JSBACH",
+	"b1_dir": "/projects/warpmip/shared/model_outputs/JSBACH/", 
+	"b1_str": "",
+	"b2_dir": "/projects/warpmip/shared/model_outputs/JSBACH/", 
+	"b2_str": "_baseline_daily_",
+	"otc_dir": "/projects/warpmip/shared/model_outputs/JSBACH/",
+	"otc_str": "_OTC_",
+	"sf_dir": "/projects/warpmip/shared/model_outputs/JSBACH/",
+	"sf_str": "_SF_",
+	"merge_type": "variables",
+	"has_b1": "False",
+	"has_b2": "True",
+	"has_otc": "True",
+	"has_sf": "True",
+	"output_dir": "/projects/warpmip/shared/processed_outputs/",
+	"subset_vars": [
+		"TotalResp",
+		"soil_temperature"
+	],
+	"rename_subset": {
+		"soil_temperature": "SoilTemp",
+		"belowsurface": "SoilDepth"
+	},
+	"data_units": {
+		"SoilTemp": {"scale_type": "add", "scale_value": -273.15, "units": "C"},
+		"TotalResp": {"scale_type": "multiply", "scale_value": 1000.0, "units": "gC/m^2/s"}
+	},
+	"coords_units": {
+		"SoilDepth": {"scale_type": "multiply", "scale_value": 0.01, "units": "m"}
+	},
+	"soil_depths": [0.03, 0.19, 0.78, 2.68, 6.98],
+	"nc_read": {
+		"engine": "netcdf4",
+		"b1_chunks": {},
+		"b2_chunks": {
+			"time": 20 
+		}
+	},
+	"nc_write": {
+		"engine": "netcdf4",
+		"zlib": "TRUE",
+		"complevel": 0,
+		"shuffle": "FALSE",
+		"fillvalue": -9999,		
+		"format": "NETCDF4_CLASSIC"
+	}
+}

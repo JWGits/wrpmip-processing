@@ -1,0 +1,51 @@
+{
+	"model_name": "UVic-ESCM",
+	"b1_dir": "/projects/warpmip/shared/model_outputs/UVic-ESCM/baseline_low/",
+	"b1_str": "wrpmip-1a", 
+	"b2_dir": "/projects/warpmip/shared/model_outputs/UVic-ESCM/baseline_high/", 
+	"b2_str": "wrpmip-1b",
+	"otc_dir": "/projects/warpmip/shared/model_outputs/UVic-ESCM/OTCv2/",
+	"otc_str": "wrpmip-1c",
+	"sf_dir": "/projects/warpmip/shared/model_outputs/UVic-ESCM/SnowFence/",
+	"sf_str": "wrpmip-1d", 
+	"merge_type": "time",
+	"has_b1": "True",
+	"has_b2": "True",
+	"has_otc": "True",
+	"has_sf": "True",
+	"output_dir": "/projects/warpmip/shared/processed_outputs/",
+	"subset_vars": [
+		"L_veggpp",
+		"L_vegnpp",
+		"L_soilresp",
+		"L_gndtemp"
+	],
+	"rename_subset": {
+		"L_gndtemp": "SoilTemp",
+		"longitude": "lon",
+		"latitude": "lat",
+		"gnd": "SoilDepth"
+	},
+	"data_units": {
+		"TotalResp": {"scale_type": "multiply", "scale_value": 1000.0, "units": "gC/m^2/s"}
+	},
+	"coords_units": {},
+	"soil_depths": [1,2,3,4,5,6,7,8,9,10,11,12,13,14],
+	"nc_read": {
+		"engine": "netcdf4",
+		"b1_chunks": {
+			"time": 40 
+		},
+		"b2_chunks": {
+			"time": 20
+		}
+	},
+	"nc_write": {
+		"engine": "netcdf4",
+		"zlib": "TRUE",
+		"complevel": 0,
+		"shuffle": "FALSE",
+		"fillvalue": -9999,		
+		"format": "NETCDF4_CLASSIC"
+	}
+}

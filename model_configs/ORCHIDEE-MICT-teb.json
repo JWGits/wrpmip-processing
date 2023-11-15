@@ -1,0 +1,54 @@
+{
+	"model_name": "ORCHIDEE-MICT-teb",
+	"b1_dir": "/projects/warpmip/shared/model_outputs/ORCHIDEE/ORCHIDEE-MICT-teb/baseline_1901_1999_mon/", 
+	"b1_str": "stomate",
+	"b1_str2": "sechiba",
+	"b2_dir": "/projects/warpmip/shared/model_outputs/ORCHIDEE/ORCHIDEE-MICT-teb/baseline_2000_2021_mon/", 
+	"b2_str": "stomate",
+	"b2_str2": "sechiba",
+	"otc_dir": "/projects/warpmip/shared/model_outputs/ORCHIDEE/ORCHIDEE-MICT-teb/OTC_2000_2021_mon/",
+	"otc_str": "stomate",
+	"otc_str2": "sechiba",
+	"sf_dir": "/projects/warpmip/shared/model_outputs/ORCHIDEE/ORCHIDEE-MICT-teb/SFW_2000_2021_mon/",
+	"sf_str": "stomate",
+	"sf_str2": "sechiba",
+	"merge_type": "time",
+	"has_b1": "True",
+	"has_b2": "True",
+	"has_otc": "True",
+	"has_sf": "True",
+	"output_dir": "/projects/warpmip/shared/processed_outputs/",
+	"subset_vars": [
+		"rh",
+		"ra"
+	],
+	"subset_vars2": [
+		"ptn"
+	],
+	"rename_subset": {
+		"latitude": "lat",
+		"longitude": "lon",
+		"nsoil": "SoilDepth" 
+	},
+	"data_units": {
+	},
+	"coords_units": {},
+	"soil_depths": [],
+	"nc_read": {
+		"engine": "netcdf4",
+		"b1_chunks": {
+			"time": 40
+		},
+		"b2_chunks": {
+			"time": 20  
+		}
+	},
+	"nc_write": {
+		"engine": "netcdf4",
+		"zlib": "TRUE",
+		"complevel": 0,
+		"shuffle": "FALSE",
+		"fillvalue": -9999,		
+		"format": "NETCDF4_CLASSIC"
+	}
+}

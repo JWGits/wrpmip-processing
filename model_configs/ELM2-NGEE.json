@@ -1,0 +1,50 @@
+{
+	"model_name": "ELM2-NGEE",
+	"b1_dir": "/projects/warpmip/shared/model_outputs/ELM2-NGEE/",
+	"b1_str": "1901-2000", 
+	"b2_dir": "/projects/warpmip/shared/model_outputs/ELM2-NGEE/", 
+	"b2_str": "baseline",
+	"otc_dir": "/projects/warpmip/shared/model_outputs/ELM2-NGEE/",
+	"otc_str": "OTC2x",
+	"sf_dir": "/projects/warpmip/shared/model_outputs/ELM2-NGEE/",
+	"sf_str": "SFx06", 
+	"merge_type": "none",
+	"has_b1": "True",
+	"has_b2": "True",
+	"has_otc": "True",
+	"has_sf": "True",
+	"output_dir": "/projects/warpmip/shared/processed_outputs/",
+	"subset_vars": [
+		"ER",
+		"TSOI",
+		"lon",
+		"lat"
+	],
+	"rename_subset": {
+		"ER": "TotalResp",
+		"TSOI": "SoilTemp",
+		"levgrnd": "SoilDepth"
+	},
+	"data_units": {
+		"SoilTemp": {"scale_type": "add", "scale_value": -273.15, "units": "C"}
+	},
+	"coords_units": {},
+	"soil_depths": [0.007100635, 0.027925, 0.06225858, 0.1188651, 0.2121934, 0.3660658, 0.6197585, 1.038027, 1.727635, 2.864607, 4.739157, 7.829766, 12.92532, 21.32647, 35.17762],
+	"nc_read": {
+		"engine": "netcdf4",
+		"b1_chunks": {
+			"time": 40
+		},
+		"b2_chunks": {
+			"time": 20 
+		}
+	},
+	"nc_write": {
+		"engine": "netcdf4",
+		"zlib": "TRUE",
+		"complevel": 0,
+		"shuffle": "FALSE",
+		"fillvalue": -9999,		
+		"format": "NETCDF4_CLASSIC"
+	}
+}

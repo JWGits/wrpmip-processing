@@ -1,0 +1,44 @@
+{
+	"model_name": "ecosys",
+	"b1_dir": "", 
+	"b1_str": "",
+	"b2_dir": "/projects/warpmip/shared/model_outputs/ecosys/unzipped/Baseline_2000-2021/",
+	"b2_str": "1b",
+	"otc_dir": "/projects/warpmip/shared/model_outputs/ecosys/unzipped/OTC/",
+	"otc_str": "1c",
+	"sf_dir": "/projects/warpmip/shared/model_outputs/ecosys/unzipped/Snow_fence/",
+	"sf_str": "1d",
+	"merge_type": "ecosys",
+	"has_b1": "False",
+	"has_b2": "True",
+	"has_otc": "True",
+	"has_sf": "True",
+	"output_dir": "/projects/warpmip/shared/processed_outputs/",
+	"subset_vars": [
+		"TotalResp",
+		"SoilTemp"
+	],
+	"rename_subset": {},
+	"data_units": {
+		"TotalResp":{"scale_type": "multiply", "scale_value": 0.00001157407, "units": "g C m-2 s-1"}
+	},
+	"coords_units": {},
+	"soil_depths": [0.01, 0.04, 0.07, 0.14, 0.25, 0.38, 0.51, 0.85, 1.2, 2, 2.5],
+	"nc_read": {
+		"engine": "netcdf4",
+		"b1_chunks": {
+			"time": 10
+		},
+		"b2_chunks": {
+			"time": 5  
+		}
+	},
+	"nc_write": {
+		"engine": "netcdf4",
+		"zlib": "TRUE",
+		"complevel": 0,
+		"shuffle": "FALSE",
+		"fillvalue": -9999,		
+		"format": "NETCDF4_CLASSIC"
+	}
+}

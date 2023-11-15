@@ -1,0 +1,48 @@
+{
+	"model_name": "CLM5-ExIce",
+	"b1_dir": "/projects/warpmip/shared/model_outputs/CLM5-NCAR/WrPMIP_NH_regional_transient_exice/lnd/hist/", 
+	"b1_str": "01-01-000",
+	"b2_dir": "/projects/warpmip/shared/model_outputs/CLM5-NCAR/WrPMIP_NH_regional_transient_exice_daily/lnd/hist/", 
+	"b2_str": "01-01-000",
+	"otc_dir": "/projects/warpmip/shared/model_outputs/CLM5-NCAR/WrPMIP_NH_regional_transient_exice_otc_warming/lnd/hist/",
+	"otc_str": "01-01-000",
+	"sf_dir": "/projects/warpmip/shared/model_outputs/CLM5-NCAR/WrPMIP_NH_regional_transient_exice_snowfence_warming/lnd/hist/",
+	"sf_str": "01-01-000",
+	"merge_type": "time",
+	"has_b1": "True",
+	"has_b2": "True",
+	"has_otc": "True",
+	"has_sf": "True",
+	"output_dir": "/projects/warpmip/shared/processed_outputs/",
+	"subset_vars": [
+		"ER",
+		"TSOI"
+	],
+	"rename_subset": {
+		"ER": "TotalResp",
+		"TSOI": "SoilTemp",
+		"levgrnd": "SoilDepth"
+	},
+	"data_units": {
+		"SoilTemp": {"scale_type": "add", "scale_value": -273.15, "units": "C"}
+	},
+	"coords_units": {},
+	"soil_depths": [0.01, 0.04, 0.09, 0.16, 0.26, 0.4, 0.58, 0.8, 1.06, 1.36, 1.7, 2.08, 2.5, 2.99, 3.58, 4.27, 5.06, 5.95, 6.94, 8.03, 9.795, 13.32777, 19.48313, 28.87072, 41.99844],
+	"nc_read": {
+		"engine": "netcdf4",
+		"b1_chunks": {
+			"time": 40
+		},
+		"b2_chunks": {
+			"time": 20
+		}
+	},
+	"nc_write": {
+		"engine": "netcdf4",
+		"zlib": "TRUE",
+		"complevel": 0,
+		"shuffle": "FALSE",
+		"fillvalue": -9999,		
+		"format": "NETCDF4_CLASSIC"
+	}
+}
