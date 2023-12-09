@@ -16,11 +16,15 @@
 	"output_dir": "/projects/warpmip/shared/processed_outputs/",
 	"subset_vars": [
 		"TotalResp",
-		"soil_temperature"
+		"soil_temperature",
+		"thaw_depth",
+		"water_table"
 	],
 	"rename_subset": {
 		"soil_temperature": "SoilTemp",
-		"belowsurface": "SoilDepth"
+		"belowsurface": "SoilDepth",
+		"thaw_depth": "ALT",
+		"water_table": "WTD"
 	},
 	"data_units": {
 		"SoilTemp": {"scale_type": "add", "scale_value": -273.15, "units": "C"},

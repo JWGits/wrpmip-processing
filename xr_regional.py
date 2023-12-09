@@ -67,12 +67,12 @@ def main(client):
         for model_sim in client.gather(L1):
             full_list.append(model_sim)
         # process each simulation for all models
-        L2 = [client.submit(xrfx.process_simulation_files, f) for f in full_list] 
+        L2 = [client.submit(xrfx.process_simulation_files, f, config) for f in full_list] 
         del full_list, L1
         wait(L2)
-        # clear and recreate site subfolders
-        L3 = [client.submit(xrfx.site_dir_prep, f) for f in config['config_files']]
-        wait(L3)
+        ## clear and recreate site subfolders
+        #L3 = [client.submit(xrfx.site_dir_prep, f) for f in config['config_files']]
+        #wait(L3)
         # create list of files to process from harmonized regional zarr files to sites for each model with all variables
         L4 = [client.submit(xrfx.subsample_site_list, f, config['site_gps']) for f in itertools.product(config['config_files'], ["b1","b2","otc","sf"])]
         full_list = []
@@ -80,32 +80,37 @@ def main(client):
             full_list.append(model_sim)
         # process each simulation for all models
         L5 = [client.submit(xrfx.subsample_sites, f) for f in full_list] 
-        del full_list, L2, L3, L4
+        del full_list, L2, L4 
         wait(L5)
-        # create site_sim directories to aggregate comparable simulations (b2,otc,sf) into site netcdfs
-        L6 = [client.submit(xrfx.site_sim_dir_prep, f) for f in config['config_files']]
-        wait(L6)
+        ## create site_sim directories to aggregate comparable simulations (b2,otc,sf) into site netcdfs
+        #L6 = [client.submit(xrfx.site_sim_dir_prep, f) for f in config['config_files']]
+        #wait(L6)
         # aggregate b2,otc,sf simulations into site netcdfs
         L7 = [client.submit(xrfx.aggregate_simulation_types, f) for f in config['config_files']] 
         wait(L7)
-        # create directories for combined files with all models
-        L8 = client.submit(xrfx.combined_dir_prep, config['config_files'][0])
-        wait(L8)
+        ## create directories for combined files with all models
+        #L8 = client.submit(xrfx.combined_dir_prep, config['config_files'][0])
+        #wait(L8)
         # aggregate all models for warming period (2000-2021) and baseline (1901-2000)
         L9 = client.submit(xrfx.aggregate_models_warming, config['config_files'])  
         L10 = client.submit(xrfx.aggregate_models_baseline, config['config_files'])  
         wait(L9)
         wait(L10)
 
-        # plot figures
+        # process teds data
+        L_obs = client.submit(xrfx.process_ted_data, config)
+        wait(L_obs)
+        # recreate schadel 2018 ERL article figures
+        L_erl = [client.submit(xrfx.schadel_plots_env, var, config, 'schadel_plots') for var in ['TotalResp','ALT','WTD','SoilTemp_10cm']] 
+        wait(L_erl)
+        # exploratory figures
         sites = list(config['site_gps'].keys())
-        var = ['TotalResp']
+        var = ['TotalResp','q10']
         models = []
         for con in config['config_files']:
             mod_con = xrfx.read_config(con)
             models.append(mod_con['model_name'])
         sims = ['b2','otc','sf']
-        soild = [0]
         plot_num = 1
         plot_line_ind = []
         plot_line_sites = []
@@ -115,12 +120,10 @@ def main(client):
         plot_scatter_sites = []
         plot_scatter_models = []
         plot_scatter_sims = []
-        plot_scatter_soild = []
         plot_scatter_delta_ind = []
         plot_scatter_delta_sites = []
         plot_scatter_delta_models = []
         plot_scatter_delta_sims = []
-        plot_scatter_delta_soild = []
         for f in [list(i) for i in itertools.product(sites,var,models,sims)]:
             f.append(plot_num)
             plot_line_ind.append(f)
@@ -143,68 +146,56 @@ def main(client):
             f = [f[i] for i in [0,1,2,4,3]]
             plot_line_sims.append(f)
             plot_num += 1
-        for f in [list(i) for i in itertools.product(sites,models,sims,soild)]:
+        for f in [list(i) for i in itertools.product(sites,var,models,sims)]:
             f.append(plot_num)
             plot_scatter_ind.append(f)
             plot_num += 1
-        for f in [list(i) for i in itertools.product(models,sims,soild)]:
+        for f in [list(i) for i in itertools.product(var,models,sims)]:
             f.append(plot_num)
             f.append(sites)
             f = [f[i] for i in [4,0,1,2,3]]
             plot_scatter_sites.append(f)
             plot_num += 1
-        for f in [list(i) for i in itertools.product(sites,sims,soild)]:
+        for f in [list(i) for i in itertools.product(sites,var,sims)]:
             f.append(plot_num)
             f.append(models)
-            f = [f[i] for i in [0,4,1,2,3]]
+            f = [f[i] for i in [0,1,4,2,3]]
             plot_scatter_models.append(f)
             plot_num += 1
-        for f in [list(i) for i in itertools.product(sites,models,soild)]:
+        for f in [list(i) for i in itertools.product(sites,var,models)]:
             f.append(plot_num)
             f.append(sims)
-            f = [f[i] for i in [0,1,4,2,3]]
+            f = [f[i] for i in [0,1,2,4,3]]
             plot_scatter_sims.append(f)
             plot_num += 1
-        for f in [list(i) for i in itertools.product(sites,models,sims)]:
-            f.append(plot_num)
-            f.append(soild)
-            f = [f[i] for i in [0,1,2,4,3]]
-            plot_scatter_soild.append(f)
-            plot_num += 1
-        
+        var = ['deltaTotalResp'] 
         sims = ['otc','sf']
-        for f in [list(i) for i in itertools.product(sites,models,sims,soild)]:
+        for f in [list(i) for i in itertools.product(sites,var,models,sims)]:
             f.append(plot_num)
             plot_scatter_delta_ind.append(f)
             plot_num += 1
-        for f in [list(i) for i in itertools.product(models,sims,soild)]:
+        for f in [list(i) for i in itertools.product(var,models,sims)]:
             f.append(plot_num)
             f.append(sites)
             f = [f[i] for i in [4,0,1,2,3]]
             plot_scatter_delta_sites.append(f)
             plot_num += 1
-        for f in [list(i) for i in itertools.product(sites,sims,soild)]:
+        for f in [list(i) for i in itertools.product(sites,var,sims)]:
             f.append(plot_num)
             f.append(models)
-            f = [f[i] for i in [0,4,1,2,3]]
+            f = [f[i] for i in [0,1,4,2,3]]
             plot_scatter_delta_models.append(f)
             plot_num += 1
-        for f in [list(i) for i in itertools.product(sites,models,soild)]:
+        for f in [list(i) for i in itertools.product(sites,var,models)]:
             f.append(plot_num)
             f.append(sims)
-            f = [f[i] for i in [0,1,4,2,3]]
-            plot_scatter_delta_sims.append(f)
-            plot_num += 1
-        for f in [list(i) for i in itertools.product(sites,models,sims)]:
-            f.append(plot_num)
-            f.append(soild)
             f = [f[i] for i in [0,1,2,4,3]]
-            plot_scatter_delta_soild.append(f)
+            plot_scatter_delta_sims.append(f)
             plot_num += 1
         # make plotting directories
         line_plot_dirs = ['line_plots_ind', 'line_plots_sites', 'line_plots_models', 'line_plots_sims']
-        scatter_plot_dirs = ['scatter_plots_ind', 'scatter_plots_sites', 'scatter_plots_models', 'scatter_plots_sims', 'scatter_plots_soild']
-        scatter_delta_plot_dirs = ['scatter_delta_plots_ind', 'scatter_delta_plots_sites', 'scatter_delta_plots_models', 'scatter_delta_plots_sims', 'scatter_delta_plots_soild']
+        scatter_plot_dirs = ['scatter_plots_ind', 'scatter_plots_sites', 'scatter_plots_models', 'scatter_plots_sims']
+        scatter_delta_plot_dirs = ['scatter_delta_plots_ind', 'scatter_delta_plots_sites', 'scatter_delta_plots_models', 'scatter_delta_plots_sims']
         L_lines = [client.submit(xrfx.plot_dir_prep, f, config['config_files'][0]) for f in line_plot_dirs]
         L_scatter = [client.submit(xrfx.plot_dir_prep, f, config['config_files'][0]) for f in scatter_plot_dirs]
         L_scatter_delta = [client.submit(xrfx.plot_dir_prep, f, config['config_files'][0]) for f in scatter_delta_plot_dirs]
@@ -220,12 +211,10 @@ def main(client):
         L16 = [client.submit(xrfx.plotnine_scatter, f, config, 'scatter_plots_sites') for f in plot_scatter_sites] 
         L17 = [client.submit(xrfx.plotnine_scatter, f, config, 'scatter_plots_models') for f in plot_scatter_models] 
         L18 = [client.submit(xrfx.plotnine_scatter, f, config, 'scatter_plots_sims') for f in plot_scatter_sims] 
-        L19 = [client.submit(xrfx.plotnine_scatter, f, config, 'scatter_plots_soild') for f in plot_scatter_soild] 
-        L20 = [client.submit(xrfx.plotnine_scatter_delta, f, config, 'scatter_delta_plots_ind') for f in plot_scatter_delta_ind] 
-        L21 = [client.submit(xrfx.plotnine_scatter_delta, f, config, 'scatter_delta_plots_sites') for f in plot_scatter_delta_sites] 
-        L22 = [client.submit(xrfx.plotnine_scatter_delta, f, config, 'scatter_delta_plots_models') for f in plot_scatter_delta_models] 
-        L23 = [client.submit(xrfx.plotnine_scatter_delta, f, config, 'scatter_delta_plots_sims') for f in plot_scatter_delta_sims] 
-        L24 = [client.submit(xrfx.plotnine_scatter_delta, f, config, 'scatter_delta_plots_soild') for f in plot_scatter_delta_soild] 
+        L19 = [client.submit(xrfx.plotnine_scatter_delta, f, config, 'scatter_delta_plots_ind') for f in plot_scatter_delta_ind] 
+        L20 = [client.submit(xrfx.plotnine_scatter_delta, f, config, 'scatter_delta_plots_sites') for f in plot_scatter_delta_sites] 
+        L21 = [client.submit(xrfx.plotnine_scatter_delta, f, config, 'scatter_delta_plots_models') for f in plot_scatter_delta_models] 
+        L22 = [client.submit(xrfx.plotnine_scatter_delta, f, config, 'scatter_delta_plots_sims') for f in plot_scatter_delta_sims] 
         # wait on plots to finish
         wait(L11)
         wait(L12)
@@ -239,9 +228,7 @@ def main(client):
         wait(L20)
         wait(L21)
         wait(L22)
-        wait(L23)
-        wait(L24)
-        #wait(L_del)
+        ##wait(L_del)
 
 if __name__ == '__main__':
     # call main function; pass client info

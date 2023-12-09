@@ -16,12 +16,14 @@
 	"output_dir": "/projects/warpmip/shared/processed_outputs/",
 	"subset_vars": [
 		"ER",
-		"TSOI"
+		"TSOI",
+		"ZWT_PERCH"
 	],
 	"rename_subset": {
 		"ER": "TotalResp",
 		"TSOI": "SoilTemp",
-		"levgrnd": "SoilDepth" 
+		"levgrnd": "SoilDepth",
+		"ZWT_PERCH": "WTD" 
 	},
 	"data_units": {
 		"SoilTemp": {"scale_type": "add", "scale_value": -273.15, "units": "C"}

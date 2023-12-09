@@ -28,12 +28,15 @@ from numcodecs import Blosc, Zlib, Zstd
 from functools import partial
 from cycler import cycler
 import zipfile
+from scipy.optimize import curve_fit
 from plotnine import (
     ggplot,
     aes,
     geom_point,
     geom_line,
+    geom_errorbar,
     geom_smooth,
+    stat_smooth,
     scale_fill_manual,
     scale_color_manual,
     scale_x_continuous,
@@ -1833,7 +1836,8 @@ def regional_simulation_files(f):
         sim_files1 = sorted(glob.glob("{}*{}*.nc".format(config[dir_name], 'daily_C_flux')))
         sim_files2 = sorted(glob.glob("{}*{}*.nc".format(config[dir_name], 'soil_temp1')))
         sim_files3 = sorted(glob.glob("{}*{}*.nc".format(config[dir_name], 'soil_temp2')))
-        sim_files = [sim_files1, sim_files2, sim_files3]
+        sim_files4 = sorted(glob.glob("{}*{}*.nc".format(config[dir_name], 'daily_water')))
+        sim_files = [sim_files1, sim_files2, sim_files3, sim_files4]
     # loop through files in reanalysis archive linking config, in, out files
     merged_file = config['output_dir'] + config['model_name'] + '/WrPMIP_Pan-Arctic_' + config['model_name'] + '_' + sim_type + '.zarr'
     # combine processing info into list
@@ -1877,6 +1881,7 @@ def preprocess_ecosys(ds, config, sim_type):
         # set coord values to time index and set attributes
         dsc.coords['time'] = ds_time
         #dsc['time'].attrs['long_name'] = "time"
+        #dsc['time'].attrs['long_name'] = "time"
         #dsc['time'].attrs['units'] = 'days since 1901-01-01 00:00:00'
         # calculate TotalResp and remake attributes
         if 'ECO_RH' in dsc.data_vars:
@@ -1901,7 +1906,7 @@ def preprocess_var(ds, config):
     return ds
 
 # merge files depending on simulation outputs
-def process_simulation_files(f):
+def process_simulation_files(f, top_config):
     # read in config, input files, and output file
     config = f[0]
     sim_type = f[1]
@@ -1997,8 +2002,9 @@ def process_simulation_files(f):
                     ds1 = xr.open_mfdataset(sim_files[0], parallel=True, engine=engine, chunks=chunk_read, preprocess=partial_ecosys, **kwargs)
                     ds2 = xr.open_mfdataset(sim_files[1], parallel=True, engine=engine, chunks=chunk_read, preprocess=partial_ecosys, **kwargs)
                     ds3 = xr.open_mfdataset(sim_files[2], parallel=True, engine=engine, chunks=chunk_read, preprocess=partial_ecosys, **kwargs)
+                    ds4 = xr.open_mfdataset(sim_files[3], parallel=True, engine=engine, chunks=chunk_read, preprocess=partial_ecosys, **kwargs)
                     # merge TotalResp and SoilTemps
-                    ds = xr.merge([ds1,ds2,ds3])
+                    ds = xr.merge([ds1,ds2,ds3,ds4])
                     with open(Path(config['output_dir'] + config['model_name'] + '/' + sim_type + '_debug.txt'), 'a') as pf:
                         print(ds, file=pf)
                     # loop through soil layer dataarrays, for each soil layer add a depth coord and expand dim
@@ -2077,6 +2083,8 @@ def process_simulation_files(f):
                             calendar='noleap', freq='5D')
                         # to recreate UVic date exactly have to shift first day of the year to the 2.5th day
                         ds = ds.assign_coords({'time': new_index})
+                    # assign depth intergers to meter depths
+                    ds = ds.assign_coords({'SoilDepth': config['soil_depths']})
             # decode cftime
             ds = xr.decode_cf(ds, use_cftime=True)
             # change calendar for JSBACH
@@ -2128,6 +2136,24 @@ def process_simulation_files(f):
                 if config['coords_units'][var]['scale_type'] == 'multiply':
                     ds[var] = ds[var] * config['coords_units'][var]['scale_value']
                     ds[var] = ds[var].assign_attrs({"units": config['coords_units'][var]['units']})
+            # add empty dataframe for missing values like WTD/ALT
+            missing_vars = [i for i in top_config['combined_vars'] if i not in ds.data_vars]
+            for var in missing_vars:
+                ds[var] = ds['TotalResp'].copy(deep=True)
+                ds[var].loc[:] = np.nan
+            with open(Path(config['output_dir'] + config['model_name'] + '/' + sim_type + '_debug.txt'), 'a') as pf:
+                print('missing vars added with all nans:',file=pf)
+                print(missing_vars, file=pf)
+                print(ds, file=pf)
+            # create 10cm soil temp average 
+            # !!!!!!!!! THIS IS INCORRECT AVERAGE UNTIL REDONE WEHN LAYER THICKNESS/INTERFACES ARE KNOWN !!!!!!
+            # need to create function to weight temp average by layer thickness and deal with partial thickness when 10cm is between nodes
+            ds['SoilTemp_10cm'] = ds['SoilTemp'].sel(SoilDepth=slice(0.0,0.11)).mean(dim='SoilDepth')           
+            with open(Path(config['output_dir'] + config['model_name'] + '/' + sim_type + '_debug.txt'), 'a') as pf:
+                print('ds including 10cm soil temp:',file=pf)
+                print(ds, file=pf)
+            # rescale from g C m-2 s-1 to g C m-2 day-1
+            ds['TotalResp'] = ds['TotalResp'] * 86400  
             # set zarr compression and encoding
             compress = Zstd(level=3) #, shuffle=Blosc.BITSHUFFLE)
             # clear all chunk and fill value encoding/attrs
@@ -2153,9 +2179,9 @@ def process_simulation_files(f):
             with open(Path(config['output_dir'] + config['model_name'] + '/' + sim_type + '_debug.txt'), 'a') as pf:
                 print('data rechunked',file=pf)
                 print(ds, file=pf)
-            encode = {
-                'SoilTemp': {'_FillValue': np.NaN, 'compressor': compress},
-                'TotalResp': {'_FillValue': np.NaN, 'compressor': compress}}
+            encode = {var: {'_FillValue': np.NaN, 'compressor': compress} for var in ds.data_vars}
+            #    'SoilTemp': {'_FillValue': np.NaN, 'compressor': compress},
+            #    'TotalResp': {'_FillValue': np.NaN, 'compressor': compress}}
             #comp = dict(compressor = compress, _FillValue=np.NaN)
             # encoding
             #encode = {var: comp for var in ds.data_vars}
@@ -2284,11 +2310,12 @@ def subsample_sites(f):
             print('data rechunked',file=pf)
             print(ds_sites, file=pf)
         compress = None #Zstd(level=3) #, shuffle=Blosc.BITSHUFFLE)
-        encode = {
-            'SoilTemp': {'_FillValue': np.NaN, 'compressor': compress},
-            'TotalResp': {'_FillValue': np.NaN, 'compressor': compress},
-            'lat': {'_FillValue': np.NaN, 'compressor': compress}, 
-            'lon': {'_FillValue': np.NaN, 'compressor': compress}} 
+        encode = {var: {'_FillValue': np.NaN, 'compressor': compress} for var in ds.data_vars}
+        #encode = {
+        #    'SoilTemp': {'_FillValue': np.NaN, 'compressor': compress},
+        #    'TotalResp': {'_FillValue': np.NaN, 'compressor': compress},
+        #    'lat': {'_FillValue': np.NaN, 'compressor': compress}, 
+        #    'lon': {'_FillValue': np.NaN, 'compressor': compress}} 
         # remove encoding of fill value before resaving
         for var in ds_sites:
             try:
@@ -2329,6 +2356,7 @@ def site_sim_dir_prep(f):
 def aggregate_simulation_types(f):
     # read config file
     config = read_config(f)
+    config = read_config(f)
     # open b2, otc, sf zarr files, add simulation dimension
     ds_list = []
     for sim in ['b2','otc','sf']:
@@ -2352,7 +2380,7 @@ def aggregate_simulation_types(f):
     with open(Path(config['output_dir'] + config['model_name'] + '/sites_sims/warming_debug.txt'), 'a') as pf:
         print(ds_sites, file=pf)
     # create dict of delta names for creation
-    new_name_dict = {"TotalResp": 'deltaTotalResp', "SoilTemp": 'deltaSoilTemp'}
+    new_name_dict = {"TotalResp": 'deltaTotalResp', "SoilTemp_10cm": 'deltaSoilTemp'}
     # convert response values of interest into delta values
     ds_list = []
     for sim_sel in ['otc','sf']:
@@ -2366,10 +2394,16 @@ def aggregate_simulation_types(f):
             # create list of newly created delta variable names and calculate warming - control
             for response in new_name_dict.keys():
                 ds_sub[new_name_dict[response]] = ds_sub[response] - ds_control[response]
+            # calculate Q10
+            warmed_temp = ds_sub['SoilTemp_10cm']
+            control_temp = ds_control['SoilTemp_10cm']
+            ds_sub['q10'] = (ds_sub['TotalResp']/ds_control['TotalResp']) ** (10/(warmed_temp - control_temp))
+            keep_list = ['q10']
+            keep_list.extend(list(new_name_dict.values())) 
             # subset to only new variables
             with open(Path(config['output_dir'] + config['model_name'] + '/sites_sims/warming_debug.txt'), 'a') as pf:
                 print(ds_sub, file=pf)
-            ds_sub = ds_sub[list(new_name_dict.values())]
+            ds_sub = ds_sub[keep_list]
             with open(Path(config['output_dir'] + config['model_name'] + '/sites_sims/warming_debug.txt'), 'a') as pf:
                 print(ds_sub, file=pf)
             # add simulation dimension back and expand dims to recreate same NetCDF shape
@@ -2390,7 +2424,7 @@ def aggregate_simulation_types(f):
     with open(Path(config['output_dir'] + config['model_name'] + '/sites_sims/warming_debug.txt'), 'a') as pf:
         print(ds_delta, file=pf)
     # add delta responses dataarrays to original dataset
-    for var in new_name_dict.values():
+    for var in keep_list:
         ds_sites[var] = ds_delta[var]
     # set zarr compression and encoding
     #compressor = zarr.Blosc(cname='zstd', clevel=3, shuffle=2)
@@ -2423,8 +2457,8 @@ def aggregate_models_warming(f):
             ds_file = config['output_dir'] + config['model_name'] + '/sites_sims/WrPMIP_sites_' + config['model_name'] + '_warming.zarr'
             # open site warming period file
             ds = xr.open_zarr(ds_file, use_cftime=True, mask_and_scale=False) 
-            #for var in ds:
-            #    del ds[var].encoding['chunks']
+            # test subsetting
+            #ds = ds[['TotalResp','SoilTemp']]
             # assign simulation coordinate
             ds = ds.assign_coords({'model': config['model_name']})
             ds = ds.expand_dims('model')
@@ -2480,8 +2514,8 @@ def aggregate_models_baseline(f):
         # write zarr
         out_file = config['output_dir'] + 'combined/WrPMIP_all_models_sites_1901-2000.zarr'
         #ds_sites.chunk({'time': -1}).to_zarr(out_file, mode="w")
-        ds_sites.to_zarr(out_file, mode="w")
-
+        ds_sites.to_zarr(out_file, mode="w")    
+  
 # create sub folder for site files
 def plot_dir_prep(f, config_file):
     # read config file
@@ -2508,11 +2542,11 @@ def plotnine_lines(f, config, out_dir):
     def is_summer(month):
         return (month >= 5) & (month <= 9)
     # check maximum Total Respiration value for plots
-    ds_mean = ds[var].sel(time=is_summer(ds[var].time.dt.month)).resample(time='A').mean('time')
-    annual_var_max = np.unique(ds_mean.max().values).max()
-    annual_var_min = np.unique(ds_mean.min().values).min()
-    daily_var_max = np.unique(ds[var].max().values).max()
-    daily_var_min = np.unique(ds[var].min().values).min()
+   # ds_mean = ds[var].sel(time=is_summer(ds[var].time.dt.month)).resample(time='A').mean('time')
+   # annual_var_max = np.unique(ds_mean.max().values).max()
+   # annual_var_min = np.unique(ds_mean.min().values).min()
+   # daily_var_max = np.unique(ds[var].max().values).max()
+   # daily_var_min = np.unique(ds[var].min().values).min()
     # subsample data
     da = ds[var].sel(site=sites, model=models, sim=sims, time=slice('2000-01-01','2020-12-31'))
     # deal with variable site/model/sims and variable depth increments
@@ -2542,31 +2576,44 @@ def plotnine_lines(f, config, out_dir):
     # create file name if any lists present
     if listed == True:
         file_name = var + '_by_time_' + file_part
-    # select only summer months and annualize for second plot
-    ds_annual = da.sel(time=is_summer(da['time.month'])).resample(time='AS').mean('time')
-    ds_annual['time'] = ds_annual['time'] + xr.coding.cftime_offsets.MonthEnd(6)
     # manipulate data for ggplot input format
     # daily data
     pd_df = da.to_dataframe()
     pd_df = pd_df.reset_index()
-    pd_df = pd.melt(pd_df, id_vars=['time','model','sim','site'], value_vars=[var], var_name='ID', value_name='variable')
-    pd_df['ID'] = pd_df[groups].astype(str).str.cat(pd_df[other_vars].astype(str), sep='.')
+    pd_df['ID'] =  pd_df[groups].astype(str).str.cat(pd_df[other_vars].astype(str), sep='_')
+    pd_df = pd_df.set_index('ID', drop=False)
+    pd_df[var].replace([np.inf, -np.inf], np.nan, inplace=True)
+    pd_df = pd_df.dropna()
+    # annulize for second plot
+    da = da.sel(time=is_summer(da['time.month'])) 
+    ds_annual = da.resample(time='AS').mean('time')
+    ds_annual['time'] = ds_annual['time'] + xr.coding.cftime_offsets.MonthEnd(6)
     # annudal data
     pd_df_annual = ds_annual.to_dataframe()
     pd_df_annual = pd_df_annual.reset_index()
-    pd_df_annual = pd.melt(pd_df_annual, id_vars=['time','model','sim','site'], value_vars=[var], var_name='ID', value_name='variable')
-    pd_df_annual['ID'] = pd_df_annual[groups].astype(str).str.cat(pd_df_annual[other_vars].astype(str), sep='.')
+    pd_df_annual['ID'] =  pd_df_annual[groups].astype(str).str.cat(pd_df_annual[other_vars].astype(str), sep='_')
+    pd_df_annual = pd_df_annual.set_index('ID', drop=False)
+    pd_df_annual[var].replace([np.inf, -np.inf], np.nan, inplace=True)
+    pd_df_annual = pd_df_annual.dropna()
     # output csv to inspect
-    #pd_df.to_csv(config['output_dir'] + 'combined/' + out_dir + '/' + file_name + '.csv')
-    #pd_df.to_csv(config['output_dir'] + 'combined/' + out_dir + '/' + file_name + '_annual.csv')
+    pd_df.to_csv(config['output_dir'] + 'combined/' + out_dir + '/' + file_name + '.csv')
+    pd_df_annual.to_csv(config['output_dir'] + 'combined/' + out_dir + '/' + file_name + '_annual.csv')
     # custome color map
     plot_colors = ['blue','gold','red','olive','purple','orange','green','cyan','magenta','brown','gray','black']
+    # create color column for consistent colors on plots
+
+    # create axis labels
+    if var == 'TotalResp':
+        x_label = r'time (day)'
+        y_label = r'Summer Ecosystem Respiration (g C $m^{-2}$ $day^{-1}$)'
+    elif var == 'q10':
+        x_label = r'time (day)'
+        y_label = r'q10 (unitless)'
     # plotnine graph daily
-    p = ggplot(pd_df, aes(x='time', y='variable', group='ID', color='ID')) + \
-        labs(x=r'time (day)', y=r'Ecosystem Respiration (g C $m^{-2}$ $s^{-1}$)') + \
+    p = ggplot(pd_df, aes(x='time', y=var, group='ID', color='ID')) + \
+        labs(x=x_label, y=y_label) + \
         geom_line() + \
         scale_x_datetime(breaks=date_breaks('5 years'), labels=date_format('%Y')) + \
-        scale_y_continuous(limits=(daily_var_min,daily_var_max)) + \
         scale_color_manual(plot_colors) + \
         guides(color = guide_legend(reverse=True)) + \
         theme_bw() + \
@@ -2578,12 +2625,12 @@ def plotnine_lines(f, config, out_dir):
             panel_border = element_blank(),
             panel_background = element_blank()
         )
+        #scale_y_continuous(limits=(daily_var_min,daily_var_max)) + \
     # plotnine graph annual
-    p2 = ggplot(pd_df_annual, aes(x='time', y='variable', group='ID', color='ID')) + \
-        labs(x=r'time (year)', y=r'Summer Ecosystem Respiration (g C $m^{-2}$ $s^{-1}$)') + \
+    p2 = ggplot(pd_df_annual, aes(x='time', y=var, group='ID', color='ID')) + \
+        labs(x=x_label, y=y_label) + \
         geom_line() + \
         scale_x_datetime(breaks=date_breaks('5 years'), labels=date_format('%Y')) + \
-        scale_y_continuous(limits=(annual_var_min,annual_var_max)) + \
         scale_color_manual(plot_colors) + \
         guides(color = guide_legend(reverse=True)) + \
         theme_bw() + \
@@ -2595,6 +2642,7 @@ def plotnine_lines(f, config, out_dir):
             panel_border = element_blank(),
             panel_background = element_blank()
         )
+        #scale_y_continuous(limits=(annual_var_min,annual_var_max)) + \
     # output graph
     p.save(filename=file_name+'.png', path=config['output_dir']+'combined/'+out_dir, dpi=300)
     p2.save(filename=file_name+'_annual.png', path=config['output_dir']+'combined/'+out_dir, dpi=300)
@@ -2604,9 +2652,173 @@ def plotnine_scatter(f, config, out_dir):
     # bring in and select data similarly as graph_lines
     # read in inputs
     sites = f[0]
-    models = f[1]
-    sims = f[2]
-    soild = f[3]
+    var = f[1]
+    models = f[2]
+    sims = f[3]
+    plot_num = f[4]
+    # set file read location from merged daily data
+    combined_file = config['output_dir'] + 'combined/WrPMIP_all_models_sites_2000-2021.zarr'
+    func_curves_file = '/projects/warpmip/shared/ted_data/response_curve_points2.csv'
+    ds = xr.open_zarr(combined_file, use_cftime=True, mask_and_scale=True)
+    func_curves = pd.read_csv(func_curves_file)
+    # function to subset only summer months
+    def is_summer(month):
+        return (month >= 5) & (month <= 9)
+    # check maximum Total Respiration value for plots
+    #ds = ds.where(ds['SoilTemp'] < 150)
+    #ds_mean = ds[['TotalResp','SoilTemp']].sel(time=is_summer(ds[['TotalResp','SoilTemp']].time.dt.month)).resample(time='M').mean('time')
+    #monthly_soilT_max = np.unique(ds_mean['SoilTemp'].max().values).max()
+    #monthly_soilT_min = np.unique(ds_mean['SoilTemp'].min().values).min()
+    #monthly_er_max = np.unique(ds_mean['TotalResp'].max().values).max()
+    #monthly_er_min = np.unique(ds_mean['TotalResp'].min().values).min()
+    #daily_soilT_max = np.unique(ds['SoilTemp'].max().values).max()
+    #daily_soilT_min = np.unique(ds['SoilTemp'].min().values).min()
+    #daily_er_max = np.unique(ds['TotalResp'].max().values).max()
+    #daily_er_min = np.unique(ds['TotalResp'].min().values).min()
+    # subsample data
+    var_list = [var]
+    var_list.extend(['SoilTemp_10cm'])
+    ds = ds[var_list].sel(site=sites, model=models, sim=sims, time=slice('2000-01-01','2020-12-31'))
+    ds = ds.sel(time=is_summer(ds['time.month']))
+    # deal with variable site/model/sims and variable depth increments
+    listed = False
+    groups = 'site'
+    other_vars = ['sim', 'model']
+    if isinstance(var, str) & isinstance(models, str) & isinstance(sites, str) & isinstance(sims, str):
+        file_name = var + '_by_time_' + models + '_' + sites[:7] + '_' + sims
+    if isinstance(sites, list):
+        sites_chopped = []
+        for i in sites:
+            sites_chopped.append(i[:7]) 
+        file_part = models + '_' + '_'.join(sites_chopped) + '_' + sims 
+        listed = True
+        groups = 'site'
+        other_vars = ['model', 'sim']
+    if isinstance(models, list):
+        file_part = '_'.join(models) + '_' + sites[:7] + '_' + sims
+        listed = True
+        groups = 'model'
+        other_vars = ['sim', 'site']
+    if isinstance(sims, list):
+        file_part = models + '_' + sites[:7] + '_' + '_'.join(sims)
+        listed = True
+        groups = 'sim'
+        other_vars = ['model', 'site']
+    # create file name if any lists present
+    if listed == True:
+        file_name = var + '_by_SoilTemp_' + file_part
+    # manipulate data for ggplot input format
+    # daily data
+    pd_df = ds.to_dataframe()
+    pd_df_test = ds.unstack()
+    pd_df = pd_df.reset_index()
+    pd_df['ID'] =  pd_df[groups].astype(str).str.cat(pd_df[other_vars].astype(str), sep='_')
+    pd_df = pd_df.set_index('ID', drop=False)
+    pd_df[var].replace([np.inf, -np.inf], np.nan, inplace=True)
+    pd_df = pd_df.dropna()
+    # monthly aggregation
+    ds_monthly = ds.resample(time='M').mean('time')
+    # monthly data
+    pd_df_monthly = ds_monthly.to_dataframe()
+    pd_df_monthly = pd_df_monthly.reset_index()
+    pd_df_monthly['ID'] =  pd_df_monthly[groups].astype(str).str.cat(pd_df_monthly[other_vars].astype(str), sep='_')
+    pd_df_monthly = pd_df_monthly.set_index('ID', drop=False)
+    pd_df_monthly[var].replace([np.inf, -np.inf], np.nan, inplace=True)
+    pd_df_monthly = pd_df_monthly.dropna()
+    # custome color map
+    plot_colors = ['blue','gold','red','olive','purple','orange','green','cyan','magenta','brown','gray','black']
+    fill_blanks = ['#ffffff00'] * len(plot_colors)
+    # make color column for plotting consistent colors
+
+    # output csv to inspect
+    pd_df.to_csv(config['output_dir'] + 'combined/' + out_dir + '/' + file_name + '.csv')
+    pd_df_monthly.to_csv(config['output_dir'] + 'combined/' + out_dir + '/' + file_name + '_monthly.csv')
+    # xaxis label
+    if var == 'TotalResp':
+        x_label = r'Soil Temperature ($^\circ$C)'
+        y_label = r'Ecosystem Respiration (g C $m^{-2}$ $d^{-1}$)'
+        # define exponent function for optimization
+        def exp_func(x,a,b):
+            return a * np.exp(b*x)
+        # define exponential regression function
+        def exp_regress(x_data, y_data):
+            p0 = [0.01, 0.1]
+            popt, pcov = curve_fit(exp_func, x_data.to_numpy(), y_data.to_numpy(), p0)
+            return popt
+        # calculate daily data fits
+        pd_df['a'] = np.nan
+        pd_df['b'] = np.nan
+        for name, group in pd_df.groupby('ID'):
+            coefs = exp_regress(group['SoilTemp_10cm'], group[var])
+            pd_df.loc[pd_df['ID'] == name, 'a'] = coefs[0]
+            pd_df.loc[pd_df['ID'] == name, 'b'] = coefs[1]
+        pd_df['exp_pred'] = pd_df['a']*np.exp(pd_df['b']*pd_df['SoilTemp_10cm']) 
+        # calculate monthly data fits
+        pd_df_monthly['a'] = np.nan
+        pd_df_monthly['b'] = np.nan
+        for name, group in pd_df_monthly.groupby('ID'):
+            coefs = exp_regress(group['SoilTemp_10cm'], group[var])
+            pd_df_monthly.loc[pd_df_monthly['ID'] == name, 'a'] = coefs[0]
+            pd_df_monthly.loc[pd_df_monthly['ID'] == name, 'b'] = coefs[1]
+        pd_df_monthly['exp_pred'] = pd_df_monthly['a']*np.exp(pd_df_monthly['b']*pd_df_monthly['SoilTemp_10cm']) 
+    elif var == 'q10':
+        x_label = r'Soil Temperature ($^\circ$C)'
+        y_label = r'q10 (unitless)'
+        pd_df['exp_pred'] = np.nan
+        pd_df_monthly['exp_pred'] = np.nan
+    # plotnine graph daily
+    p = ggplot(pd_df, aes(x='SoilTemp_10cm', y=var, group='ID', color='ID')) + \
+        labs(x=x_label, y=y_label) + \
+        geom_point() + \
+        geom_line(aes(y=pd_df['exp_pred'])) + \
+        scale_fill_manual(values = fill_blanks) + \
+        scale_color_manual(plot_colors) + \
+        guides(color = guide_legend(reverse=True)) + \
+        theme_bw() + \
+        theme(
+            axis_text_x = element_text(angle = 90),
+            axis_line = element_line(colour = "black"),
+            legend_text=element_text(size=8),
+            panel_grid_major = element_blank(),
+            panel_grid_minor = element_blank(),
+            panel_border = element_blank(),
+            panel_background = element_blank()
+        )
+    #if var == 'TotalResp':
+    #    p = p + geom_line(aes(y='exp_pred'))
+    # plotnine graph monthly
+    p2 = ggplot(pd_df_monthly, aes(x='SoilTemp_10cm', y=var, group='ID', color='ID')) + \
+        labs(x=x_label, y=y_label) + \
+        geom_point() + \
+        geom_line(aes(y=pd_df_monthly['exp_pred'])) + \
+        scale_fill_manual(values = fill_blanks) + \
+        scale_color_manual(plot_colors) + \
+        guides(color = guide_legend(reverse=True)) + \
+        theme_bw() + \
+        theme(
+            axis_text_x = element_text(angle = 90),
+            axis_line = element_line(colour = "black"),
+            legend_text=element_text(size=8),
+            panel_grid_major = element_blank(),
+            panel_grid_minor = element_blank(),
+            panel_border = element_blank(),
+            panel_background = element_blank()
+        )
+    #    # example of axis controls for plots 
+    #    #scale_x_continuous(limits=(0, 30)) + \
+    #    #scale_y_continuous(limits=(0, 8e-5)) + \
+    # output graph
+    p.save(filename=file_name+'.png', path=config['output_dir']+'combined/'+out_dir, \
+        height=5, width=8, units='in', dpi=300)
+    p2.save(filename=file_name+'_monthly.png', path=config['output_dir']+'combined/'+out_dir, \
+        height=5, width=8, units='in', dpi=300)
+
+def plotnine_scatter_delta(f, config, out_dir): 
+    # bring in and select data similarly as graph_lines
+    sites = f[0]
+    var = f[1]
+    models = f[2]
+    sims = f[3]
     plot_num = f[4]
     # set file read location from merged daily data
     combined_file = config['output_dir'] + 'combined/WrPMIP_all_models_sites_2000-2021.zarr'
@@ -2626,271 +2838,67 @@ def plotnine_scatter(f, config, out_dir):
     #daily_er_max = np.unique(ds['TotalResp'].max().values).max()
     #daily_er_min = np.unique(ds['TotalResp'].min().values).min()
     # subsample data
-    ds = ds[['TotalResp','SoilTemp']].sel(site=sites, model=models, sim=sims, time=slice('2000-01-01','2020-12-31'))
+    var_list = [var]
+    var_list.extend(['deltaSoilTemp'])
+    ds = ds[var_list].sel(site=sites, model=models, sim=sims, time=slice('2000-01-01','2020-12-31'))
     ds = ds.sel(time=is_summer(ds['time.month']))
-    ds = ds.where((ds['TotalResp'] > 0) & (ds['SoilTemp'] > 0))
-    #ds['SoilDepth'] = ds['SoilDepth'].round(decimals=3)
     # deal with variable site/model/sims and variable depth increments
     listed = False
     groups = 'site'
     other_vars = ['sim', 'model']
-    if isinstance(models, str) & isinstance(sites, str) & isinstance(sims, str) & isinstance(soild, int):
-        file_name = 'TotalResp' + '_by_SoilTemp_' + models + '_' + sites[:7] + '_' + sims + '_soildepth' + str(soild)
+    if isinstance(var, str) & isinstance(models, str) & isinstance(sites, str) & isinstance(sims, str):
+        file_name = var + '_by_time_' + models + '_' + sites[:7] + '_' + sims
     if isinstance(sites, list):
         sites_chopped = []
         for i in sites:
             sites_chopped.append(i[:7]) 
-        file_part = models + '_' + '_'.join(sites_chopped) + '_' + sims + '_soildepth' + str(soild) 
+        file_part = models + '_' + '_'.join(sites_chopped) + '_' + sims 
         listed = True
         groups = 'site'
-        other_vars = ['model','sim']
+        other_vars = ['model', 'sim']
     if isinstance(models, list):
-        file_part = '_'.join(models) + '_' + sites[:7] + '_' + sims + '_soildepth' + str(soild) 
+        file_part = '_'.join(models) + '_' + sites[:7] + '_' + sims
         listed = True
         groups = 'model'
-        other_vars = ['sim','site']
+        other_vars = ['sim', 'site']
     if isinstance(sims, list):
-        file_part = models + '_' + sites[:7] + '_' + '_'.join(sims) + '_soildepth' + str(soild) 
+        file_part = models + '_' + sites[:7] + '_' + '_'.join(sims)
         listed = True
         groups = 'sim'
-        other_vars = ['model','site']
-    if isinstance(soild, list):
-        file_part = models + '_' + sites[:7] + '_' + sims + '_soildepth' + str(soild) 
-        listed = True
-        groups = 'SoilDepth'
-        other_vars = ['site','sim','model']
+        other_vars = ['model', 'site']
     # create file name if any lists present
     if listed == True:
-        file_name = 'TotalResp' + '_by_SoilTemp_' + file_part
-    # select only summer months and annualize for second plot
-    ds_monthly = ds.resample(time='M').mean('time')
-    with open(Path(config['output_dir'] + '/combined/scatter_debug.txt'), 'w') as pf:
-        print(ds, file=pf)
-        print('resampled data to monthly', file=pf)
-        print(ds_monthly, file=pf)
+        file_name = var + '_by_SoilTemp_' + file_part
     # manipulate data for ggplot input format
-    var = ['TotalResp']
-    id_vars = ['time','model','sim','site','SoilTemp','SoilDepth']
     # daily data
     pd_df = ds.to_dataframe()
     pd_df = pd_df.reset_index()
-    pd_df = pd_df.dropna(subset=['SoilTemp'])
-    pd_df_new = pd.DataFrame(data=None, columns=pd_df.columns)
-    for i in pd_df['model'].drop_duplicates().tolist():
-        pd_df_sub_mod = pd_df.loc[pd_df['model'] == i]
-        if isinstance(soild, int):
-            pd_df_min_unique = pd_df_sub_mod['SoilDepth'].unique()
-            pd_df_min_depths = pd.DataFrame({'depths': pd_df_min_unique}).nsmallest(1, 'depths')
-            true_list = [np.isclose(pd_df_min_depths,x,0.0001).any() for x in pd_df['SoilDepth']]
-            pd_df_subset = pd_df.loc[true_list] 
-        else:
-            pd_df_min_unique = pd_df_sub_mod['SoilDepth'].unique()
-            pd_df_min_depths = pd.DataFrame({'depths': pd_df_min_unique}).nsmallest(len(soild), 'depths')
-            true_list = [np.isclose(pd_df_min_depths,x,0.0001).any() for x in pd_df['SoilDepth']]
-            pd_df_subset = pd_df.loc[true_list]
-        pd_df_new = pd.concat([pd_df_new, pd_df_subset], ignore_index=True) 
-    pd_df = pd.melt(pd_df_new, id_vars=id_vars, value_vars=var, var_name='ID', value_name='variable')
-    #pd_df.to_csv(config['output_dir'] + 'combined/' + out_dir + '/' + file_name + '.csv')
-    pd_df['ID'] = pd_df[groups].astype(str).str.cat(pd_df[other_vars].astype(str), sep='_')
-    pd_df['ID'] = pd_df['ID'].astype(str).str.cat(pd_df['SoilDepth'].round(3).astype(str), sep='_')
-    # annudal data
-    pd_df_monthly = ds_monthly.to_dataframe()
-    pd_df_monthly = pd_df_monthly.reset_index()
-    pd_df_monthly = pd_df_monthly.dropna(subset=['SoilTemp'])
-    pd_df_monthly_new = pd.DataFrame(data=None, columns=pd_df_monthly.columns)
-    for i in pd_df_monthly['model'].drop_duplicates().tolist():
-        pd_df_sub_mod = pd_df_monthly.loc[pd_df_monthly['model'] == i]
-        if isinstance(soild, int):
-            pd_df_min_unique = pd_df_sub_mod['SoilDepth'].unique()
-            pd_df_min_depths = pd.DataFrame({'depths': pd_df_min_unique}).nsmallest(1, 'depths')
-            true_list = [np.isclose(pd_df_min_depths,x,0.0001).any() for x in pd_df_monthly['SoilDepth']]
-            pd_df_subset = pd_df_monthly.loc[true_list] 
-        else:
-            pd_df_min_unique = pd_df_sub_mod['SoilDepth'].unique()
-            pd_df_min_depths = pd.DataFrame({'depths': pd_df_min_unique}).nsmallest(len(soild), 'depths')
-            true_list = [np.isclose(pd_df_min_depths,x,0.0001).any() for x in pd_df_monthly['SoilDepth']]
-            pd_df_subset = pd_df_monthly.loc[true_list]
-        pd_df_monthly_new = pd.concat([pd_df_monthly_new, pd_df_subset], ignore_index=True) 
-    pd_df_monthly = pd.melt(pd_df_monthly_new, id_vars=id_vars, value_vars=var, var_name='ID', value_name='variable')
-    #pd_df_monthly.to_csv(config['output_dir'] + 'combined/' + out_dir + '/' + file_name + '_monthly.csv')
-    pd_df_monthly['ID'] = pd_df_monthly[groups].astype(str).str.cat(pd_df_monthly[other_vars].astype(str), sep='_')
-    pd_df_monthly['ID'] = pd_df_monthly['ID'].astype(str).str.cat(pd_df_monthly['SoilDepth'].round(3).astype(str), sep='_')
-    # custome color map
-    plot_colors = ['blue','gold','red','olive','purple','orange','green','cyan','magenta','brown','gray','black']
-    fill_blanks = ['#ffffff00'] * len(plot_colors)
-    # plotnine graph daily
-    p = ggplot(pd_df, aes(x='SoilTemp', y='variable', group='ID', color='ID')) + \
-        labs(x=r'Soil Temperature ($^\circ$C)', y=r'Summer Ecosystem Respiration (g C $m^{-2}$ $s^{-1}$)') + \
-        geom_point() + \
-        scale_x_continuous(limits=(0, 30)) + \
-        scale_y_continuous(limits=(0, 8e-5)) + \
-        scale_fill_manual(values = fill_blanks) + \
-        scale_color_manual(plot_colors) + \
-        guides(color = guide_legend(reverse=True)) + \
-        theme_bw() + \
-        theme(
-            axis_text_x = element_text(angle = 90),
-            axis_line = element_line(colour = "black"),
-            legend_text=element_text(size=8),
-            panel_grid_major = element_blank(),
-            panel_grid_minor = element_blank(),
-            panel_border = element_blank(),
-            panel_background = element_blank()
-        )
-    # plotnine graph annual
-    p2 = ggplot(pd_df_monthly, aes(x='SoilTemp', y='variable', group='ID', color='ID')) + \
-        labs(x=r'Soil Temperature ($^\circ$C)', y=r'Summer Ecosystem Respiration (g C $m^{-2}$ $s^{-1}$)') + \
-        geom_point() + \
-        scale_x_continuous(limits=(0, 30)) + \
-        scale_y_continuous(limits=(0, 8e-5)) + \
-        scale_fill_manual(values = fill_blanks) + \
-        scale_color_manual(plot_colors) + \
-        guides(color = guide_legend(reverse=True)) + \
-        theme_bw() + \
-        theme(
-            axis_text_x = element_text(angle = 90),
-            axis_line = element_line(colour = "black"),
-            legend_text=element_text(size=8),
-            panel_grid_major = element_blank(),
-            panel_grid_minor = element_blank(),
-            panel_border = element_blank(),
-            panel_background = element_blank()
-        )
-    # output graph
-    p.save(filename=file_name+'.png', path=config['output_dir']+'combined/'+out_dir, \
-        height=5, width=8, units='in', dpi=300)
-    p2.save(filename=file_name+'_monthly.png', path=config['output_dir']+'combined/'+out_dir, \
-        height=5, width=8, units='in', dpi=300)
-
-def plotnine_scatter_delta(f, config, out_dir): 
-    # bring in and select data similarly as graph_lines
-    # read in inputs
-    sites = f[0]
-    models = f[1]
-    sims = f[2]
-    soild = f[3]
-    plot_num = f[4]
-    # set file read location from merged daily data
-    combined_file = config['output_dir'] + 'combined/WrPMIP_all_models_sites_2000-2021.zarr'
-    ds = xr.open_zarr(combined_file, use_cftime=True, mask_and_scale=True)
-    # function to subset only summer months
-    def is_summer(month):
-        return (month >= 5) & (month <= 9)
-    ## convert TotalResp and SoilTemp to delta values
-    #ds_list = []
-    #for sim_sel in ['otc','sf']:
-    #    try:
-    #        # select warming treatment, subtract control
-    #        ds_sub = ds_init.sel(sim=sim_sel).copy()
-    #        ds_control = ds_init.sel(sim='b2')
-    #        ds_sub['TotalResp'] = ds_sub['TotalResp'] - ds_control['TotalResp']
-    #        ds_sub['SoilTemp'] = ds_sub['SoilTemp'] - ds_control['SoilTemp']
-    #        # add simulation dimension back and expand dims to recreate same NetCDF shape
-    #        ds_sub = ds_sub.assign_coords({'sim': sim_sel})
-    #        ds_sub = ds_sub.expand_dims('sim')
-    #        # append dataset to list for merging
-    #        ds_list.append(ds_sub)
-    #    except Exception as error:
-    #        pass
-    ## recreate original dataarray shape
-    #ds = xr.merge(ds_list)
-    # subsample data
-    ds = ds[['deltaTotalResp','deltaSoilTemp']].sel(site=sites, model=models, sim=sims, time=slice('2000-01-01','2020-12-31'))
-    ds = ds.sel(time=is_summer(ds['time.month']))
-    ds = ds.where((ds['deltaTotalResp'] > 0) & (ds['deltaSoilTemp'] > 0))
-    #ds['SoilDepth'] = ds['SoilDepth'].round(decimals=3)
-    # deal with variable site/model/sims and variable depth increments
-    listed = False
-    groups = 'site'
-    other_vars = ['sim', 'model']
-    if isinstance(models, str) & isinstance(sites, str) & isinstance(sims, str) & isinstance(soild, int):
-        file_name = 'deltaTotalResp' + '_by_deltaSoilTemp_' + models + '_' + sites[:7] + '_' + sims + '_soildepth' + str(soild)
-    if isinstance(sites, list):
-        sites_chopped = []
-        for i in sites:
-            sites_chopped.append(i[:7]) 
-        file_part = models + '_' + '_'.join(sites_chopped) + '_' + sims + '_soildepth' + str(soild) 
-        listed = True
-        groups = 'site'
-        other_vars = ['model','sim']
-    if isinstance(models, list):
-        file_part = '_'.join(models) + '_' + sites[:7] + '_' + sims + '_soildepth' + str(soild) 
-        listed = True
-        groups = 'model'
-        other_vars = ['sim','site']
-    if isinstance(sims, list):
-        file_part = models + '_' + sites[:7] + '_' + '_'.join(sims) + '_soildepth' + str(soild) 
-        listed = True
-        groups = 'sim'
-        other_vars = ['model','site']
-    if isinstance(soild, list):
-        file_part = models + '_' + sites[:7] + '_' + sims + '_soildepth' + str(soild) 
-        listed = True
-        groups = 'SoilDepth'
-        other_vars = ['site','sim','model']
-    # create file name if any lists present
-    if listed == True:
-        file_name = 'deltaTotalResp' + '_by_deltaSoilTemp_' + file_part
-    # select only summer months and annualize for second plot
+    pd_df['ID'] =  pd_df[groups].astype(str).str.cat(pd_df[other_vars].astype(str), sep='_')
+    pd_df = pd_df.set_index('ID', drop=False)
+    pd_df[var].replace([np.inf, -np.inf], np.nan, inplace=True)
+    pd_df = pd_df.dropna()
+    # aggregate to monthly means
     ds_monthly = ds.resample(time='M').mean('time')
-    with open(Path(config['output_dir'] + '/combined/scatter_delta_debug.txt'), 'w') as pf:
-        print(ds, file=pf)
-        print('resampled data to monthly', file=pf)
-        print(ds_monthly, file=pf)
-    # manipulate data for ggplot input format
-    var = ['deltaTotalResp']
-    id_vars = ['time','model','sim','site','deltaSoilTemp','SoilDepth']
-    # daily data
-    pd_df = ds.to_dataframe()
-    pd_df = pd_df.reset_index()
-    pd_df = pd_df.dropna(subset=['deltaSoilTemp'])
-    pd_df_new = pd.DataFrame(data=None, columns=pd_df.columns)
-    for i in pd_df['model'].drop_duplicates().tolist():
-        pd_df_sub_mod = pd_df.loc[pd_df['model'] == i]
-        if isinstance(soild, int):
-            pd_df_min_unique = pd_df_sub_mod['SoilDepth'].unique()
-            pd_df_min_depths = pd.DataFrame({'depths': pd_df_min_unique}).nsmallest(1, 'depths')
-            true_list = [np.isclose(pd_df_min_depths,x,0.0001).any() for x in pd_df['SoilDepth']]
-            pd_df_subset = pd_df.loc[true_list] 
-        else:
-            pd_df_min_unique = pd_df_sub_mod['SoilDepth'].unique()
-            pd_df_min_depths = pd.DataFrame({'depths': pd_df_min_unique}).nsmallest(len(soild), 'depths')
-            true_list = [np.isclose(pd_df_min_depths,x,0.0001).any() for x in pd_df['SoilDepth']]
-            pd_df_subset = pd_df.loc[true_list]
-        pd_df_new = pd.concat([pd_df_new, pd_df_subset], ignore_index=True) 
-    pd_df = pd.melt(pd_df_new, id_vars=id_vars, value_vars=var, var_name='ID', value_name='variable')
-    #pd_df.to_csv(config['output_dir'] + 'combined/' + out_dir + '/' + file_name + '.csv')
-    pd_df['ID'] = pd_df[groups].astype(str).str.cat(pd_df[other_vars].astype(str), sep='_')
-    pd_df['ID'] = pd_df['ID'].astype(str).str.cat(pd_df['SoilDepth'].round(3).astype(str), sep='_')
     # monthly data
     pd_df_monthly = ds_monthly.to_dataframe()
     pd_df_monthly = pd_df_monthly.reset_index()
-    pd_df_monthly = pd_df_monthly.dropna(subset=['deltaSoilTemp'])
-    pd_df_monthly_new = pd.DataFrame(data=None, columns=pd_df_monthly.columns)
-    for i in pd_df_monthly['model'].drop_duplicates().tolist():
-        pd_df_sub_mod = pd_df_monthly.loc[pd_df_monthly['model'] == i]
-        if isinstance(soild, int):
-            pd_df_min_unique = pd_df_sub_mod['SoilDepth'].unique()
-            pd_df_min_depths = pd.DataFrame({'depths': pd_df_min_unique}).nsmallest(1, 'depths')
-            true_list = [np.isclose(pd_df_min_depths,x,0.0001).any() for x in pd_df_monthly['SoilDepth']]
-            pd_df_subset = pd_df_monthly.loc[true_list] 
-        else:
-            pd_df_min_unique = pd_df_sub_mod['SoilDepth'].unique()
-            pd_df_min_depths = pd.DataFrame({'depths': pd_df_min_unique}).nsmallest(len(soild), 'depths')
-            true_list = [np.isclose(pd_df_min_depths,x,0.0001).any() for x in pd_df_monthly['SoilDepth']]
-            pd_df_subset = pd_df_monthly.loc[true_list]
-        pd_df_monthly_new = pd.concat([pd_df_monthly_new, pd_df_subset], ignore_index=True) 
-    pd_df_monthly = pd.melt(pd_df_monthly_new, id_vars=id_vars, value_vars=var, var_name='ID', value_name='variable')
-    #pd_df_monthly.to_csv(config['output_dir'] + 'combined/' + out_dir + '/' + file_name + '_monthly.csv')
-    pd_df_monthly['ID'] = pd_df_monthly[groups].astype(str).str.cat(pd_df_monthly[other_vars].astype(str), sep='_')
-    pd_df_monthly['ID'] = pd_df_monthly['ID'].astype(str).str.cat(pd_df_monthly['SoilDepth'].round(3).astype(str), sep='_')
+    pd_df_monthly['ID'] =  pd_df_monthly[groups].astype(str).str.cat(pd_df_monthly[other_vars].astype(str), sep='_')
+    pd_df_monthly = pd_df_monthly.set_index('ID', drop=False)
+    pd_df_monthly[var].replace([np.inf, -np.inf], np.nan, inplace=True)
+    pd_df_monthly = pd_df_monthly.dropna()
     # custome color map
     plot_colors = ['blue','gold','red','olive','purple','orange','green','cyan','magenta','brown','gray','black']
     fill_blanks = ['#ffffff00'] * len(plot_colors)
+    # create color column for consistent plotting
+    
+    # x and y labels
+    x_label = r'Delta Soil Temperature ($^\circ$C)'
+    y_label = r'Delta Ecosystem Respiration (g C $m^{-2}$ $d^{-1}$)'
     # plotnine graph daily
-    p = ggplot(pd_df, aes(x='deltaSoilTemp', y='variable', group='ID', color='ID')) + \
-        labs(x=r'Soil Temperature ($^\circ$C)', y=r'Delta Ecosystem Respiration (g C $m^{-2}$ $s^{-1}$)') + \
+    p = ggplot(pd_df, aes(x='deltaSoilTemp', y=var, group='ID', color='ID')) + \
+        labs(x=x_label, y=y_label) + \
         geom_point() + \
+        geom_smooth(method = 'lm', se=False) + \
         scale_fill_manual(values = fill_blanks) + \
         scale_color_manual(plot_colors) + \
         guides(color = guide_legend(reverse=True)) + \
@@ -2907,9 +2915,10 @@ def plotnine_scatter_delta(f, config, out_dir):
     # plotnine graph annual
     # add back if x/y limits needed: scale_x_continuous(limits=(0, 30)) + \
     # add back if x/y limits needed:scale_y_continuous(limits=(0, 8e-5)) + \
-    p2 = ggplot(pd_df_monthly, aes(x='deltaSoilTemp', y='variable', group='ID', color='ID')) + \
-        labs(x=r'Soil Temperature ($^\circ$C)', y=r'Delta Ecosystem Respiration (g C $m^{-2}$ $s^{-1}$)') + \
+    p2 = ggplot(pd_df_monthly, aes(x='deltaSoilTemp', y=var, group='ID', color='ID')) + \
+        labs(x=x_label, y=y_label) + \
         geom_point() + \
+        geom_smooth(method = 'lm', se=False) + \
         scale_fill_manual(values = fill_blanks) + \
         scale_color_manual(plot_colors) + \
         guides(color = guide_legend(reverse=True)) + \
@@ -2929,3 +2938,320 @@ def plotnine_scatter_delta(f, config, out_dir):
     p2.save(filename=file_name+'_monthly.png', path=config['output_dir']+'combined/'+out_dir, \
         height=5, width=8, units='in', dpi=300)
 
+def process_ted_data(config):
+    # define ted data location 
+    obs_raw_file = '/projects/warpmip/shared/ted_data/flux_daily.csv'
+    obs_processed_file = '/projects/warpmip/shared/ted_data/USA-EML_processed_data.csv'
+    obs_processed_file_monthly = '/projects/warpmip/shared/ted_data/USA-EML_processed_data_monthly.csv'
+    obs_processed_file_annual = '/projects/warpmip/shared/ted_data/USA-EML_processed_data_annual.csv'
+    # read in csv file, parse datstime from date column
+    pd_obs = pd.read_csv(obs_raw_file)
+    # Subset, Harmonize needed columns and factors 
+    pd_obs = pd_obs[['date','plot.id','treatment','reco.sum','t10.filled.mean','wtd','alt']]
+    pd_obs = pd_obs.rename(columns={
+            'date': 'time',
+            'plot.id': 'plot',
+            'treatment': 'sim',
+            'reco.sum': 'obs_TotalResp',
+            't10.filled.mean': 'obs_SoilTemp',
+            'wtd': 'obs_WTD',
+            'alt': 'obs_ALT'})
+    pd_obs.loc[pd_obs.sim == 'Control','sim'] = 'b2'
+    pd_obs.loc[pd_obs.sim == 'Air Warming','sim'] = 'otc'
+    pd_obs.loc[pd_obs.sim == 'Soil Warming','sim'] = 'sf'
+    pd_obs = pd_obs[pd_obs['sim'] != 'Air + Soil Warming']
+    # scale and change sign
+    pd_obs['obs_ALT'] = (pd_obs['obs_ALT']/100)*(-1)
+    pd_obs['obs_WTD'] = (pd_obs['obs_WTD']/100)*(-1)
+    with open(Path('/projects/warpmip/shared/ted_data/ted_debug.txt'), 'w') as pf:
+        with pd.option_context('display.max_columns', None):
+            print('Healy observations after subset, hamonization:', file=pf)
+            print(pd_obs.dtypes, file=pf)
+            print(pd_obs, file=pf)
+    # set dimensions to multiindex
+    pd_obs = pd_obs.set_index(['time','plot','sim'])
+    # remove duplicated values (all from 2018) some error in heidis code 
+    pd_obs = pd_obs[~pd_obs.index.duplicated()]
+    # create datetime index
+    pd_obs = pd_obs.reset_index()
+    pd_obs['time'] = pd.to_datetime(pd_obs['time'])
+    pd_obs['time'] = pd_obs['time'].dt.strftime('%Y-%m-%d')
+    datetime_index = pd.DatetimeIndex(pd_obs['time'])
+    pd_obs['month'] = datetime_index.month
+    pd_obs['year'] = datetime_index.year 
+    pd_obs = pd_obs.set_index(datetime_index)
+    pd_obs = pd_obs.loc[(pd_obs.index > datetime(year=2009,month=1,day=1)) & (pd_obs.index < datetime(year=2021,month=12,day=31))]
+    with open(Path('/projects/warpmip/shared/ted_data/ted_debug.txt'), 'a') as pf:
+        with pd.option_context('display.max_columns', None):
+            print('Healy observations after subset, hamonization:', file=pf)
+            print(pd_obs.dtypes, file=pf)
+            print(pd_obs, file=pf)
+    # aggregate daily data to year/month/plot/sim
+    pd_obs_monthly = pd_obs.groupby(['year','month','plot','sim']).agg({
+        'obs_TotalResp': 'sum',
+        'obs_SoilTemp': 'mean',
+        'obs_WTD': 'mean',
+        'obs_ALT': 'max'})
+    pd_obs_monthly = pd_obs_monthly.reset_index()
+    with open(Path('/projects/warpmip/shared/ted_data/ted_debug.txt'), 'a') as pf:
+        with pd.option_context('display.max_columns', None):
+            print('Healy observations month/plot/treatment aggregation:', file=pf)
+            print(pd_obs_monthly.dtypes, file=pf)
+            print(pd_obs_monthly, file=pf)
+    # aggregate across years to create the correct n for mean/std calculation (n= 48/4 = 12)
+    pd_obs_monthly = pd_obs.groupby(['month','plot','sim']).agg({
+        'obs_TotalResp': 'mean',
+        'obs_SoilTemp': 'mean',
+        'obs_WTD': 'mean',
+        'obs_ALT': 'max'})
+    pd_obs_monthly = pd_obs_monthly.reset_index()
+    with open(Path('/projects/warpmip/shared/ted_data/ted_debug.txt'), 'a') as pf:
+        with pd.option_context('display.max_columns', None):
+            print('Healy observations month/plot/treatment aggregation:', file=pf)
+            print(pd_obs_monthly.dtypes, file=pf)
+            print(pd_obs_monthly, file=pf)
+    # aggregate across plots for final mean/std
+    pd_obs_monthly_mean = pd_obs_monthly.groupby(['month','sim']).agg({
+        'obs_TotalResp':'mean',
+        'obs_SoilTemp':'mean',
+        'obs_WTD':'mean',
+        'obs_ALT':'mean'})
+    pd_obs_monthly_mean = pd_obs_monthly_mean.reset_index()
+    with open(Path('/projects/warpmip/shared/ted_data/ted_debug.txt'), 'a') as pf:
+        with pd.option_context('display.max_columns', None):
+            print('Healy observations monthly mean:', file=pf)
+            print(pd_obs_monthly_mean.dtypes, file=pf)
+            print(pd_obs_monthly_mean, file=pf)
+    def std(x):
+        return np.std(x, ddof=1)
+    pd_obs_monthly_std = pd_obs_monthly.groupby(['month','sim']).agg({
+        'obs_TotalResp': std,
+        'obs_SoilTemp': std,
+        'obs_WTD': std,
+        'obs_ALT': std})
+    pd_obs_monthly_std = pd_obs_monthly_std.reset_index()
+    pd_obs_monthly_std = pd_obs_monthly_std.rename(columns={
+        'obs_TotalResp':'obs_TotalResp_std',
+        'obs_SoilTemp':'obs_SoilTemp_std',
+        'obs_WTD':'obs_WTD_std',
+        'obs_ALT':'obs_ALT_std'})
+    with open(Path('/projects/warpmip/shared/ted_data/ted_debug.txt'), 'a') as pf:
+        with pd.option_context('display.max_columns', None):
+            print('Healy observations monthly std:', file=pf)
+            print(pd_obs_monthly_std.dtypes, file=pf)
+            print(pd_obs_monthly_std, file=pf)
+    pd_obs_monthly_mean = pd.merge(pd_obs_monthly_mean, pd_obs_monthly_std, on=['month','sim'])
+    #pd_obs_monthly_mean['month'] = pd.DatetimeIndex(pd_obs_monthly_mean['time']).month
+    with open(Path('/projects/warpmip/shared/ted_data/ted_debug.txt'), 'a') as pf:
+        with pd.option_context('display.max_columns', None):
+            print('Healy observations monthly mean and std merged:', file=pf)
+            print(pd_obs_monthly_mean.dtypes, file=pf)
+            print(pd_obs_monthly_mean, file=pf)
+    # annual
+    pd_obs_annual = pd_obs.groupby(['year','plot','sim']).agg({
+        'obs_TotalResp':'sum',
+        'obs_SoilTemp':'mean',
+        'obs_WTD':'mean',
+        'obs_ALT':'max'})
+    pd_obs_annual = pd_obs_annual.reset_index()
+    #pd_obs_annual = pd_obs_annual.set_index(pd.DatetimeIndex(pd_obs_annual['time']))
+    pd_obs_annual_mean = pd_obs_annual.groupby(['year','sim']).agg({
+        'obs_TotalResp':'mean',
+        'obs_SoilTemp':'mean',
+        'obs_WTD':'mean',
+        'obs_ALT':'mean'})
+    pd_obs_annual_mean = pd_obs_annual_mean.reset_index()
+    pd_obs_annual_std = pd_obs_annual.groupby(['year','sim']).agg({
+        'obs_TotalResp': std,
+        'obs_SoilTemp': std,
+        'obs_WTD': std,
+        'obs_ALT': std}) 
+    pd_obs_annual_std = pd_obs_annual_std.reset_index()
+    pd_obs_annual_std = pd_obs_annual_std.rename(columns={
+        'obs_TotalResp':'obs_TotalResp_std',
+        'obs_SoilTemp':'obs_SoilTemp_std',
+        'obs_WTD':'obs_WTD_std',
+        'obs_ALT':'obs_ALT_std'})
+    pd_obs_annual_mean = pd.merge(pd_obs_annual_mean, pd_obs_annual_std, on=['year','sim'])
+    pd_obs_annual_mean['time'] = pd_obs_annual_mean['year'].astype(str) + '-01-01'
+    # add site column and EML name for merging during plotting
+    pd_obs_monthly_mean['site'] = 'USA-EightMileLake'
+    pd_obs_annual_mean['site'] = 'USA-EightMileLake'
+    # set index as time
+    # print out data
+    with open(Path('/projects/warpmip/shared/ted_data/ted_debug.txt'), 'a') as pf:
+        with pd.option_context('display.max_columns', None):
+            print('Healy observations monthly mean:', file=pf)
+            print(pd_obs_monthly_mean, file=pf)
+            print('Healy observations monthly std:', file=pf)
+            print(pd_obs_monthly_std, file=pf)
+            print('Healy observations annual mean:', file=pf)
+            print(pd_obs_annual_mean, file=pf)
+            print('Healy observations annual std:', file=pf)
+            print(pd_obs_annual_std, file=pf)
+    # output files to csv for import by graphing functions
+    pd_obs = pd_obs.drop(columns=['time'])
+    pd_obs = pd_obs.reset_index() 
+    pd_obs.to_csv(obs_processed_file, index=False)
+    pd_obs_monthly_mean.to_csv(obs_processed_file_monthly, index=False)
+    pd_obs_annual_mean.to_csv(obs_processed_file_annual, index=False)
+
+def schadel_plots_env(var, config, out_dir):
+    # create folder for output
+    Path(config['output_dir'] + '/combined/' + out_dir).mkdir(parents=True, exist_ok=True)
+    Path(config['output_dir'] + '/combined/' + out_dir).chmod(0o762)
+    # set file read location from merged daily data
+    combined_file = config['output_dir'] + 'combined/WrPMIP_all_models_sites_2000-2021.zarr'
+    ds = xr.open_zarr(combined_file, use_cftime=True, mask_and_scale=True)
+    # read in Healy obs data harmonized to WrPMIP simulation labels/factors
+    obs_processed_file_monthly = '/projects/warpmip/shared/ted_data/USA-EML_processed_data_monthly.csv'
+    obs_processed_file_annual = '/projects/warpmip/shared/ted_data/USA-EML_processed_data_annual.csv'
+    pd_obs_monthly = pd.read_csv(obs_processed_file_monthly)
+    pd_obs_annual = pd.read_csv(obs_processed_file_annual, parse_dates=['time'])
+    with open(Path(config['output_dir'] + '/combined/schadel_debug'+var+'.txt'), 'w') as pf:
+        with pd.option_context('display.max_columns', 10):
+            print('monthly obs subset:', file=pf)
+            print(pd_obs_monthly, file=pf)
+            print('annual obs subset:', file=pf)
+            print(pd_obs_annual, file=pf)
+    # function to subset only summer months
+    def is_summer(month):
+        return (month >= 5) & (month <= 9)
+    # subsample xarray dataset
+    da = ds[var].sel(time=slice('2000-01-01','2020-12-31'))
+    #da = da.sel(time=is_summer(da['time.month']))
+    with open(Path(config['output_dir'] + '/combined/schadel_debug'+var+'.txt'), 'a') as pf:
+        with pd.option_context('display.max_columns', 10):
+            print('summer data subset:', file=pf)
+            print(da, file=pf)
+    # aggregate sims (collapse models and sites into one value per model simulation)
+    da_monthly = da.groupby('time.month').mean('time')
+    if var == 'ALT':
+        da_monthly = da.groupby('time.month').max('time')
+    if var == 'TotalResp':
+        da_monthly = da.groupby('time.month').sum('time')
+    with open(Path(config['output_dir'] + '/combined/schadel_debug'+var+'.txt'), 'a') as pf:
+        with pd.option_context('display.max_columns', 10):
+            print('variable resampled to monthly timestep:', file=pf)
+            print(da_monthly, file=pf)
+    # monthly data
+    pd_df_monthly = da_monthly.to_dataframe()
+    with open(Path(config['output_dir'] + '/combined/schadel_debug'+var+'.txt'), 'a') as pf:
+        with pd.option_context('display.max_columns', 10):
+            print('pandas dataframe conversion:', file=pf)
+            print(pd_df_monthly, file=pf)
+    pd_df_monthly = pd_df_monthly.reset_index()
+    pd_df_monthly['ID'] =  pd_df_monthly['model'].astype(str).str.cat(pd_df_monthly[['site','sim']].astype(str), sep='_')
+    pd_df_monthly = pd_df_monthly.set_index('ID', drop=False)    
+    pd_df_monthly[var].replace([np.inf, -np.inf], np.nan, inplace=True)
+    pd_df_monthly = pd_df_monthly.dropna()
+    # aggregate to monthly means
+    da_annual = da.groupby('time.year').mean('time')
+    if var == 'ALT':
+        da_annual = da.groupby('time.year').max('time')
+    if var == 'TotalResp':
+        da_annual = da.groupby('time.year').sum('time')
+    # monthly data
+    pd_df_annual = da_annual.to_dataframe()
+    pd_df_annual = pd_df_annual.reset_index()
+    pd_df_annual['ID'] =  pd_df_annual['model'].astype(str).str.cat(pd_df_annual[['site','sim']].astype(str), sep='_')
+    pd_df_annual = pd_df_annual.set_index('ID', drop=False)
+    pd_df_annual[var].replace([np.inf, -np.inf], np.nan, inplace=True)
+    pd_df_annual = pd_df_annual.dropna()
+    with open(Path(config['output_dir'] + '/combined/schadel_debug'+var+'.txt'), 'a') as pf:
+        with pd.option_context('display.max_columns', 10):
+            print('pandas dataframe conversion:', file=pf)
+            print(pd_df_annual.dtypes, file=pf)
+    # deal with differences in positive vs negative numerical depths
+    ## monthly
+    if var == 'ALT':
+        pd_df_annual.loc[pd_df_annual['model'] != 'ecosys', var] *= -1
+        pd_df_monthly.loc[pd_df_monthly['model'] != 'ecosys', var] *= -1
+    if var == 'WTD':    
+        pd_df_annual.loc[pd_df_annual['model'] != 'JSBACH', var] *= -1
+        pd_df_monthly.loc[pd_df_monthly['model'] != 'JSBACH', var] *= -1
+    # subset to only healy
+    pd_df_monthly = pd_df_monthly.loc[pd_df_monthly['site'] == 'USA-EightMileLake']
+    pd_df_annual = pd_df_annual.loc[pd_df_annual['site'] == 'USA-EightMileLake']
+    #pd_obs_annual.to_csv(config['output_dir'] + 'combined/' + out_dir + '/' + var + '_obs_annual.csv')
+    pd_df_annual['year'] = pd.to_datetime(pd_df_annual['year'], format='%Y')
+    pd_obs_annual['year'] = pd.to_datetime(pd_obs_annual['year'], format='%Y')
+    # output csv files
+    pd_df_monthly.to_csv(config['output_dir'] + 'combined/' + out_dir + '/' + var + '_monthly.csv')
+    pd_obs_monthly.to_csv(config['output_dir'] + 'combined/' + out_dir + '/' + var + '_obs_monthly.csv')
+    pd_df_annual.to_csv(config['output_dir'] + 'combined/' + out_dir + '/' + var + '_annual.csv')
+    pd_obs_annual.to_csv(config['output_dir'] + 'combined/' + out_dir + '/' + var + '_obs_annual.csv')
+    pd_df_annual['year'] = pd.to_datetime(pd_df_annual['year'], format='%Y')
+    pd_obs_annual['year'] = pd.to_datetime(pd_obs_annual['year'], format='%Y')
+    # plot labels
+    if var == 'TotalResp':
+        y_label = r'Summer Ecosystem Respiration (g C $m^{-2}$)'
+        obs_str = 'obs_TotalResp'
+        ymax_str = 'obs_TotalResp + obs_TotalResp_std'
+        ymin_str = 'obs_TotalResp - obs_TotalResp_std'
+    elif var == 'ALT':
+        y_label = r'Max Active Layer Thickness (m)'
+        obs_str = 'obs_ALT'
+        ymax_str = 'obs_ALT + obs_ALT_std'
+        ymin_str = 'obs_ALT - obs_ALT_std'
+    elif var == 'WTD':
+        y_label = r'Water Table Depth (m)'
+        obs_str = 'obs_WTD'
+        ymax_str = 'obs_WTD + obs_WTD_std'
+        ymin_str = 'obs_WTD - obs_WTD_std'
+    elif var == 'SoilTemp_10cm':
+        y_label = r'10cm Soil Temperature ($^\circ$C)'
+        obs_str = 'obs_SoilTemp'
+        ymax_str = 'obs_SoilTemp + obs_SoilTemp_std'
+        ymin_str = 'obs_SoilTemp - obs_SoilTemp_std'
+    # subset control and warming subsets for plotting points by black/red
+    pd_obs_annual_control = pd_obs_annual[pd_obs_annual['sim'] == 'b2']
+    pd_obs_annual_otc = pd_obs_annual[pd_obs_annual['sim'] == 'otc']
+    pd_obs_annual_sf = pd_obs_annual[pd_obs_annual['sim'] == 'sf']
+    pd_obs_monthly_control = pd_obs_monthly[pd_obs_monthly['sim'] == 'b2']
+    pd_obs_monthly_otc = pd_obs_monthly[pd_obs_monthly['sim'] == 'otc']
+    pd_obs_monthly_sf = pd_obs_monthly[pd_obs_monthly['sim'] == 'sf']
+    # plot annual change
+    p1 = ggplot(pd_df_annual, aes(x='year', y=var, group='ID', color='model', linetype='sim')) + \
+        geom_line() + \
+        geom_point(mapping=aes(x='year', y=obs_str), color='red', data=pd_obs_annual_sf, inherit_aes=False) + \
+        geom_point(mapping=aes(x='year', y=obs_str), color='black', data=pd_obs_annual_control, inherit_aes=False) + \
+        geom_errorbar(mapping=aes(x='year', ymax=ymax_str, ymin=ymin_str), color='red', data=pd_obs_annual_sf, inherit_aes=False) + \
+        geom_errorbar(mapping=aes(x='year', ymax=ymax_str, ymin=ymin_str), color='black', data=pd_obs_annual_control, inherit_aes=False) + \
+        scale_x_datetime(breaks=date_breaks('5 years'), labels=date_format('%Y')) + \
+        labs(x=r'time (year)', y=y_label) + \
+        theme_bw() + \
+        theme(
+            axis_text_x = element_text(angle = 90),
+            axis_line = element_line(colour = "black"),
+            panel_grid_major = element_blank(),
+            panel_grid_minor = element_blank(),
+            panel_border = element_blank(),
+            panel_background = element_blank()
+        )
+        #scale_x_datetime(breaks=date_breaks('5 years'), labels=date_format('%Y')) + \
+    p2 = ggplot(pd_df_monthly, aes(x='month', y=var, group='ID', color='model', linetype='sim')) + \
+        geom_line() + \
+        scale_x_continuous(breaks = np.arange(np.round(min(pd_df_monthly.month)), np.round(max(pd_df_monthly.month)), step = 2)) + \
+        geom_point(data=pd_obs_monthly_sf, mapping=aes(x='month', y=obs_str), color='red', inherit_aes=False) + \
+        geom_errorbar(data=pd_obs_monthly_sf, mapping=aes(x='month', ymax=ymax_str, ymin=ymin_str), color='red', inherit_aes=False) + \
+        geom_point(data=pd_obs_monthly_control, mapping=aes(x='month', y=obs_str), color='black', inherit_aes=False) + \
+        geom_errorbar(data=pd_obs_monthly_control, mapping=aes(x='month', ymax=ymax_str, ymin=ymin_str), color='black', inherit_aes=False) + \
+        labs(x=r'time (month)', y=y_label) + \
+        theme_bw() + \
+        theme(
+            axis_text_x = element_text(angle = 90),
+            axis_line = element_line(colour = "black"),
+            panel_grid_major = element_blank(),
+            panel_grid_minor = element_blank(),
+            panel_border = element_blank(),
+            panel_background = element_blank()
+        )
+        #scale_x_datetime(breaks=date_breaks('month'), labels=date_format('%M')) + \
+        #guides(color = guide_legend(reverse=True)) + \
+        #scale_color_manual(plot_colors) + \
+    # output graph
+    p1.save(filename=var+'_by_time_annual.png', path=config['output_dir']+'combined/'+out_dir, \
+        height=5, width=8, units='in', dpi=300)
+    p2.save(filename=var+'_by_time_monthly.png', path=config['output_dir']+'combined/'+out_dir, \
+        height=5, width=8, units='in', dpi=300)

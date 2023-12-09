@@ -16,9 +16,12 @@
 	"output_dir": "/projects/warpmip/shared/processed_outputs/",
 	"subset_vars": [
 		"TotalResp",
-		"SoilTemp"
+		"SoilTemp",
+		"ACTV_LYR"
 	],
-	"rename_subset": {},
+	"rename_subset": {
+		"ACTV_LYR": "ALT"
+	},
 	"data_units": {
 		"TotalResp":{"scale_type": "multiply", "scale_value": 0.00001157407, "units": "g C m-2 s-1"}
 	},

@@ -25,6 +25,8 @@
 		"/scratch/jw2636/wrpmip/python_codes/model_configs/DVM-DOS-TEM",
 		"/scratch/jw2636/wrpmip/python_codes/model_configs/JULES"
 	],
+	"combined_vars": ["TotalResp","SoilTemp","WTD","ALT"],
+	"included_models": ["CLM5","CLM5-ExIce","ELM2-NGEE","JSBACH","UVic-ESCM","ecosys"],
 	"site_gps": {
 		"CAN-DaringLake": 	{"lon": 248.43330, "lat": 64.86670},
 		"GRE-Disko": 		{"lon": 306.15000, "lat": 69.26670},
