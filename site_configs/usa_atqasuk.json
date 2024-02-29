@@ -1,0 +1,69 @@
+{
+	"site_name": "USA-Atqasuk",
+	"year_start": 1998,
+	"year_end": 2021,
+	"clm_landmask": "/projects/warpmip/shared/model_outputs/CLM5_sparse_grid_tests/domain.lnd.360x720_cruncep.100429.nc",	
+	"reanalysis_dir": 
+		"/projects/warpmip/shared/model_outputs/CLM5_sparse_grid_tests/archive/Sites_CRUJRA_exice_CLM_transient/lnd/hist/",
+	"site_dir":
+		"/projects/warpmip/shared/forcing_data/biascorrected_forcing/USA-Atqasuk/crujra/",
+	"lndgrid": 11,
+	"cru_GMT_adj": -8,
+	"obs_GMT_adj": 0,
+	"lat": 70.45,
+	"lon": -157.40000,
+	"obs": 	{
+		"f1": {
+			"name": "/projects/warpmip/shared/forcing_data/biascorrected_forcing/USA-Atqasuk/1998_ITEX_Barrow_Atqasuk_Climate_v1.csv", 	
+			"extended_files": [
+				"/projects/warpmip/shared/forcing_data/biascorrected_forcing/USA-Atqasuk/1999_ITEX_Barrow_Atqasuk_Climate_v1.csv", 	
+				"/projects/warpmip/shared/forcing_data/biascorrected_forcing/USA-Atqasuk/2000_ITEX_Barrow_Atqasuk_Climate_v1.csv", 	
+				"/projects/warpmip/shared/forcing_data/biascorrected_forcing/USA-Atqasuk/2001_ITEX_Barrow_Atqasuk_Climate_v1.csv", 	
+				"/projects/warpmip/shared/forcing_data/biascorrected_forcing/USA-Atqasuk/2002_ITEX_Barrow_Atqasuk_Climate_v1.csv", 	
+				"/projects/warpmip/shared/forcing_data/biascorrected_forcing/USA-Atqasuk/2003_ITEX_Barrow_Atqasuk_Climate_v1.csv", 	
+				"/projects/warpmip/shared/forcing_data/biascorrected_forcing/USA-Atqasuk/2004_ITEX_Barrow_Atqasuk_Climate_v1.csv", 	
+				"/projects/warpmip/shared/forcing_data/biascorrected_forcing/USA-Atqasuk/2005_ITEX_Barrow_Atqasuk_Climate_v1.csv", 	
+				"/projects/warpmip/shared/forcing_data/biascorrected_forcing/USA-Atqasuk/2006_ITEX_Barrow_Atqasuk_Climate_v1.csv", 	
+				"/projects/warpmip/shared/forcing_data/biascorrected_forcing/USA-Atqasuk/2007_ITEX_Barrow_Atqasuk_Climate_v1.csv", 	
+				"/projects/warpmip/shared/forcing_data/biascorrected_forcing/USA-Atqasuk/2008_ITEX_Barrow_Atqasuk_Climate_v2.csv", 	
+				"/projects/warpmip/shared/forcing_data/biascorrected_forcing/USA-Atqasuk/2009_ITEX_Barrow_Atqasuk_Climate_v1.csv", 	
+				"/projects/warpmip/shared/forcing_data/biascorrected_forcing/USA-Atqasuk/2010_ITEX_Barrow_Atqasuk_Climate_v1.csv", 	
+				"/projects/warpmip/shared/forcing_data/biascorrected_forcing/USA-Atqasuk/2011_ITEX_Barrow_Atqasuk_Climate_v1.csv", 	
+				"/projects/warpmip/shared/forcing_data/biascorrected_forcing/USA-Atqasuk/2012_ITEX_Barrow_Atqasuk_Climate_v1.csv", 	
+				"/projects/warpmip/shared/forcing_data/biascorrected_forcing/USA-Atqasuk/2013_ITEX_Barrow_Atqasuk_Climate_v2.csv", 	
+				"/projects/warpmip/shared/forcing_data/biascorrected_forcing/USA-Atqasuk/2014_ITEX_Barrow_Atqasuk_Climate_v2.csv", 	
+				"/projects/warpmip/shared/forcing_data/biascorrected_forcing/USA-Atqasuk/2015_ITEX_Barrow_Atqasuk_Climate_v1.csv", 	
+				"/projects/warpmip/shared/forcing_data/biascorrected_forcing/USA-Atqasuk/2016_ITEX_Barrow_Atqasuk_Climate_v1.csv", 	
+				"/projects/warpmip/shared/forcing_data/biascorrected_forcing/USA-Atqasuk/2017_ITEX_Barrow_Atqasuk_Climate_v1.csv", 	
+				"/projects/warpmip/shared/forcing_data/biascorrected_forcing/USA-Atqasuk/2018_ITEX_Barrow_Atqasuk_Climate_v1.csv", 	
+				"/projects/warpmip/shared/forcing_data/biascorrected_forcing/USA-Atqasuk/2019_ITEX_Barrow_Atqasuk_Climate_v1.csv", 	
+				"/projects/warpmip/shared/forcing_data/biascorrected_forcing/USA-Atqasuk/2020_ITEX_Barrow_Atqasuk_Climate_v1.csv", 	
+				"/projects/warpmip/shared/forcing_data/biascorrected_forcing/USA-Atqasuk/2021_ITEX_Barrow_Atqasuk_Climate_v1.csv"
+			], 	
+			"skip_rows": 0,
+			"freq": "H",
+			"sep": ",",
+			"datetime_format": "%Y%m%d%H",
+			"datetime_cols": ["strAlaska"],
+			"cols_old": ["strAlaska","strSitCom","numTempT","numWind","numPAR"],
+			"cols_new": {
+				"strSitCom": "SITE",
+				"numTempT": "TBOT",
+				"numPAR": "PAR",
+				"numWind": "WIND"
+			}
+		}
+	},
+	"groupby": "time.dayofyear",
+	"nc_read": {
+		"engine": "netcdf4"
+	},
+	"nc_write": {
+		"engine": "netcdf4",
+		"zlib": "TRUE",
+		"complevel": 0,
+		"shuffle": "FALSE",
+		"fillvalue": -9999,		
+		"format": "NETCDF4_CLASSIC"
+	}
+}

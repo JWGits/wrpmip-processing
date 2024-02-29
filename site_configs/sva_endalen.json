@@ -1,0 +1,39 @@
+{
+	"site_name": "SVA-Endalen",
+	"year_start": 2000,
+	"year_end": 2021,
+	"clm_landmask": "/projects/warpmip/shared/model_outputs/CLM5_sparse_grid_tests/domain.lnd.360x720_cruncep.100429.nc",	
+	"reanalysis_dir": 
+		"/projects/warpmip/shared/model_outputs/CLM5_sparse_grid_tests/archive/Sites_CRUJRA_exice_CLM_transient/lnd/hist/",
+	"site_dir":
+		"/projects/warpmip/shared/forcing_data/biascorrected_forcing/SVA-Endalen/crujra/",
+	"lndgrid": 6,
+	"cru_GMT_adj": 1,
+	"obs_GMT_adj": 0,
+	"lat": 78.19000,
+	"lon": 15.76000,
+	"obs": 	{
+		"f1": {
+			"name": "", 	
+			"skip_rows": null,
+			"freq": "",
+			"sep": "",
+			"datetime_format": "",
+			"datetime_cols": [],
+			"cols_old": [],
+			"cols_new": {}
+		}
+	},
+	"groupby": "time.dayofyear",
+	"nc_read": {
+		"engine": "netcdf4"
+	},
+	"nc_write": {
+		"engine": "netcdf4",
+		"zlib": "TRUE",
+		"complevel": 0,
+		"shuffle": "FALSE",
+		"fillvalue": -9999,		
+		"format": "NETCDF4_CLASSIC"
+	}
+}

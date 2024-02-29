@@ -1,0 +1,61 @@
+{
+	"site_name": "CAN-DaringLake",
+	"year_start": 1996,
+	"year_end": 2021,
+	"clm_landmask": "/projects/warpmip/shared/model_outputs/CLM5_sparse_grid_tests/domain.lnd.360x720_cruncep.100429.nc",	
+	"reanalysis_dir": 
+		"/projects/warpmip/shared/model_outputs/CLM5_sparse_grid_tests/archive/Sites_CRUJRA_exice_CLM_transient/lnd/hist/",
+	"site_dir":
+		"/projects/warpmip/shared/forcing_data/biascorrected_forcing/CAN-DaringLake/crujra/",
+	"lndgrid": 35,
+	"cru_GMT_adj": -7,
+	"obs_GMT_adj": 0,
+	"lat": 64.86670,
+	"lon": -111.56700,
+	"obs": 	{
+		"f1": {
+			"name": "/projects/warpmip/shared/forcing_data/biascorrected_forcing/CAN-DaringLake/Daring_Lake_Station_ID_96DL01.csv", 	
+			"skip_rows": 1,
+			"sep": ",",
+			"freq": "H",
+			"datetime_format": "%Y-%m-%d %H%M",
+			"datetime_cols": ["Year","Month","Day","Hour"],
+			"cols_old": ["Year","Month","Day","Time","Air Temp","Relative Humidity","Wind Speed","Incoming SW Radiation"],
+			"cols_new": {
+				"Time": "Hour",
+				"Air Temp": "TBOT",
+				"Incoming SW Radiation": "FSDS",
+				"Relative Humidity": "RH",
+				"Wind Speed": "WIND"
+			}
+		},
+		"f2": {
+			"name": "/projects/warpmip/shared/forcing_data/biascorrected_forcing/CAN-DaringLake/Daring_Lake_Station_ID_96DL02.csv", 	
+			"skip_rows": 1,
+			"sep": ",",
+			"freq": "H",
+			"datetime_format": "%Y-%m-%d %H%M",
+			"datetime_cols": ["Year","Month","Day","Hour"],
+			"cols_old": ["Year","Month","Day","Time","Air Temperature","Relative Humidity","Wind Speed","Incoming SW Radiation"],
+			"cols_new": {
+				"Time": "Hour",
+				"Air Temperature": "TBOT",
+				"Incoming SW Radiation": "FSDS",
+				"Relative Humidity": "RH",
+				"Wind Speed": "WIND"
+			}
+		}
+	},
+	"groupby": "time.dayofyear",
+	"nc_read": {
+		"engine": "netcdf4"
+	},
+	"nc_write": {
+		"engine": "netcdf4",
+		"zlib": "TRUE",
+		"complevel": 0,
+		"shuffle": "FALSE",
+		"fillvalue": -9999,		
+		"format": "NETCDF4_CLASSIC"
+	}
+}

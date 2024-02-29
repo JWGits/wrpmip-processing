@@ -1,0 +1,46 @@
+{
+	"site_name": "USA-EightMileLake",
+	"year_start": 2008,
+	"year_end": 2021,
+	"clm_landmask": "/projects/warpmip/shared/model_outputs/CLM5_sparse_grid_tests/domain.lnd.360x720_cruncep.100429.nc",	
+	"reanalysis_dir": 
+		"/projects/warpmip/shared/model_outputs/CLM5_sparse_grid_tests/archive/Sites_CRUJRA_exice_CLM_transient/lnd/hist/",
+	"site_dir":
+		"/projects/warpmip/shared/forcing_data/biascorrected_forcing/USA-EightMileLake/crujra/",
+	"lndgrid": 38,
+	"cru_GMT_adj": -10,
+	"obs_GMT_adj": 0,
+	"lat": 63.88310,
+	"lon": -149.22600,
+	"obs": 	{
+		"f1": {
+			"name": "/projects/warpmip/shared/forcing_data/biascorrected_forcing/USA-EightMileLake/AMF_US-EML_BASE_HH_4-5.csv", 	
+			"skip_rows": 2,
+			"freq": "30min",
+			"sep": ",",
+			"datetime_format": "%Y%m%d%H%M",
+			"datetime_cols": ["TIMESTAMP_START"],
+			"cols_old": ["TIMESTAMP_START","TA","SW_IN","LW_IN","PA","RH","WS"],
+			"cols_new": {
+				"TA": "TBOT",
+				"SW_IN": "FSDS",
+				"LW_IN": "FLDS",
+				"PA": "PBOT",
+				"RH": "RH",
+				"WS": "WIND"
+			}
+		}
+	},
+	"groupby": "time.dayofyear",
+	"nc_read": {
+		"engine": "netcdf4"
+	},
+	"nc_write": {
+		"engine": "netcdf4",
+		"zlib": "TRUE",
+		"complevel": 0,
+		"shuffle": "FALSE",
+		"fillvalue": -9999,		
+		"format": "NETCDF4_CLASSIC"
+	}
+}

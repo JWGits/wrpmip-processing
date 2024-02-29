@@ -1,0 +1,39 @@
+{
+	"site_name": "CAN-WanderingRiver",
+	"year_start": 2000,
+	"year_end": 2021,
+	"clm_landmask": "/projects/warpmip/shared/model_outputs/CLM5_sparse_grid_tests/domain.lnd.360x720_cruncep.100429.nc",	
+	"reanalysis_dir": 
+		"/projects/warpmip/shared/model_outputs/CLM5_sparse_grid_tests/archive/Sites_CRUJRA_exice_CLM_transient/lnd/hist/",
+	"site_dir":
+		"/projects/warpmip/shared/forcing_data/biascorrected_forcing/CAN-WanderingRiver/crujra/",
+	"lndgrid": 41,
+	"cru_GMT_adj": -7,
+	"obs_GMT_adj": 0,
+	"lat": 55.35460,
+	"lon": -112.51800,
+	"obs": 	{
+		"f1": {
+			"name": "", 	
+			"skip_rows": null,
+			"sep": "",
+			"freq": "",
+			"datetime_format": "",
+			"datetime_cols": [],
+			"cols_old": [],
+			"cols_new": {}
+		}
+	},
+	"groupby": "time.dayofyear",
+	"nc_read": {
+		"engine": "netcdf4"
+	},
+	"nc_write": {
+		"engine": "netcdf4",
+		"zlib": "TRUE",
+		"complevel": 0,
+		"shuffle": "FALSE",
+		"fillvalue": -9999,		
+		"format": "NETCDF4_CLASSIC"
+	}
+}

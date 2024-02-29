@@ -1,0 +1,46 @@
+{
+	"site_name": "USA-Toolik",
+	"year_start": 1999,
+	"year_end": 2021,
+	"clm_landmask": "/projects/warpmip/shared/model_outputs/CLM5_sparse_grid_tests/domain.lnd.360x720_cruncep.100429.nc",	
+	"reanalysis_dir": 
+		"/projects/warpmip/shared/model_outputs/CLM5_sparse_grid_tests/archive/Sites_CRUJRA_exice_CLM_transient/lnd/hist/",
+	"site_dir":
+		"/projects/warpmip/shared/forcing_data/biascorrected_forcing/USA-Toolik/crujra/",
+	"lndgrid": 20,
+	"cru_GMT_adj": -10,
+	"obs_GMT_adj": 0,
+	"lat": 68.63330,
+	"lon": -149.71700,
+	"obs": 	{
+		"f1": {
+			"name": "/projects/warpmip/shared/forcing_data/biascorrected_forcing/USA-Toolik/1-hour_data.csv", 	
+			"freq": "1H",
+			"skip_rows": null,
+			"sep": ",",
+			"datetime_format": "%Y-%m-%d %H%M",
+			"datetime_cols": ["date","hour"],		
+			"cols_old": ["date","hour","air_temp_3m","sw_up_avg","lw_up_avg","barometer_mbar","rh_3m", "wind_sp_5m"],
+			"cols_new": {
+				"air_temp_3m": "TBOT",
+				"sw_up_avg": "FSDS",
+				"lw_up_avg": "FLDS",
+				"barometer_mbar": "PBOT",
+				"rh_3m": "RH",
+				"wind_sp_5m": "WIND"
+			}
+		}
+	},
+	"groupby": "time.dayofyear",
+	"nc_read": {
+		"engine": "netcdf4"
+	},
+	"nc_write": {
+		"engine": "netcdf4",
+		"zlib": "TRUE",
+		"complevel": 0,
+		"shuffle": "FALSE",
+		"fillvalue": -9999,		
+		"format": "NETCDF4_CLASSIC"
+	}
+}

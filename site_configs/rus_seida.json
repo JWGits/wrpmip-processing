@@ -1,0 +1,45 @@
+{
+	"site_name": "RUS-Seida",
+	"year_start": 2007,
+	"year_end": 2014,
+	"clm_landmask": "/projects/warpmip/shared/model_outputs/CLM5_sparse_grid_tests/domain.lnd.360x720_cruncep.100429.nc",
+	"reanalysis_dir": 
+		"/projects/warpmip/shared/model_outputs/CLM5_sparse_grid_tests/archive/Sites_CRUJRA_exice_CLM_transient/lnd/hist/",
+	"site_dir":
+		"/projects/warpmip/shared/forcing_data/biascorrected_forcing/RUS-Seida/crujra/",
+	"lndgrid": 34,
+	"cru_GMT_adj": 3,
+	"obs_GMT_adj": 0,
+	"lat": 67.05000,
+	"lon": 62.91670,
+	"obs": 	{
+		"f1": {
+			"name": "/projects/warpmip/shared/forcing_data/biascorrected_forcing/RUS-Seida/All_Seida_meteo_2007_2014_rawdata_for_WarPWIP_20221009.csv", 	
+			"skip_rows": null,
+			"freq": "1H",
+			"sep": ",",
+			"datetime_format": "%Y-%m-%d %H:%M:%S",
+			"datetime_cols": ["datetimeGMT3"],
+			"cols_old": ["datetimeGMT3","airt","par","pres","rh","ws"],
+			"cols_new": {
+				"airt": "TBOT",
+				"par": "PAR",
+				"pres": "PBOT",
+				"rh": "RH",
+				"ws": "WIND"
+			}
+		}
+	},
+	"groupby": "time.dayofyear",
+	"nc_read": {
+		"engine": "netcdf4"
+	},
+	"nc_write": {
+		"engine": "netcdf4",
+		"zlib": "TRUE",
+		"complevel": 0,
+		"shuffle": "FALSE",
+		"fillvalue": -9999,		
+		"format": "NETCDF4_CLASSIC"
+	}
+}

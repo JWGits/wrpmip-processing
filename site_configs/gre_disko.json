@@ -1,0 +1,113 @@
+{
+	"site_name": "GRE-Disko",
+	"year_start": 1995,
+	"year_end": 2021,
+	"clm_landmask": "/projects/warpmip/shared/model_outputs/CLM5_sparse_grid_tests/domain.lnd.360x720_cruncep.100429.nc",	
+	"reanalysis_dir": 
+		"/projects/warpmip/shared/model_outputs/CLM5_sparse_grid_tests/archive/Sites_CRUJRA_exice_CLM_transient/lnd/hist/",
+	"site_dir":
+		"/projects/warpmip/shared/forcing_data/biascorrected_forcing/GRE-Disko/crujra/",
+	"lndgrid": 17,
+	"cru_GMT_adj": -2,
+	"obs_GMT_adj": 0,
+	"lat": 69.26670,
+	"lon": -53.85000,
+	"obs": 	{
+		"f1": {
+			"name": "/projects/warpmip/shared/forcing_data/biascorrected_forcing/GRE-Disko/Disko_air_pressure_200cm_hourly.csv", 	
+			"skip_rows": null,
+			"sep": "\t",
+			"freq": "H",
+			"datetime_format": "%Y-%m-%d %H:%M:%S",
+			"datetime_cols": ["Date","Time"],
+			"cols_old": ["Date","Time","Pressure (hPa)","quality flag"],
+			"cols_new": {
+				"Pressure (hPa)": "PBOT"
+			}
+		},
+		"f2": {
+			"name": "/projects/warpmip/shared/forcing_data/biascorrected_forcing/GRE-Disko/Disko_air_temperature_200cm_hourly.csv", 	
+			"skip_rows": null,
+			"sep": "\t",
+			"freq": "H",
+			"datetime_format": "%Y-%m-%d %H:%M:%S",
+			"datetime_cols": ["Date","Time"],
+			"cols_old": ["Date","Time","AT (°C)","quality flag"],
+			"cols_new": {
+				"AT (°C)": "TBOT"
+			}
+		},
+		"f3": {
+			"name": "/projects/warpmip/shared/forcing_data/biascorrected_forcing/GRE-Disko/Disko_relative_humidity_200cm_hourly.csv", 	
+			"skip_rows": null,
+			"sep": "\t",
+			"freq": "H",
+			"datetime_format": "%Y-%m-%d %H:%M:%S",
+			"datetime_cols": ["Date","Time"],
+			"cols_old": ["Date","Time","RH (%)","quality flag"],
+			"cols_new": {
+				"RH (%)": "RH"
+			}
+		},
+		"f4": {
+			"name": "/projects/warpmip/shared/forcing_data/biascorrected_forcing/GRE-Disko/Disko_precipitation_hourly.csv", 	
+			"skip_rows": null,
+			"sep": "\t",
+			"freq": "H",
+			"datetime_format": "%Y-%m-%d %H:%M:%S",
+			"datetime_cols": ["Date","Time"],
+			"cols_old": ["Date","Time","PRE (mm)","quality flag"],
+			"cols_new": {
+				"PRE (mm)": "PRECIP"
+			}
+		},
+		"f5": {
+			"name": "/projects/warpmip/shared/forcing_data/biascorrected_forcing/GRE-Disko/Disko_wind_speed_200cm_10min.csv", 	
+			"skip_rows": null,
+			"sep": "\t",
+			"freq": "H",
+			"datetime_format": "%Y-%m-%d %H:%M:%S",
+			"datetime_cols": ["Date","Time"],
+			"cols_old": ["Date","Time","WS (m/s)","quality flag"],
+			"cols_new": {
+				"WS (m/s)": "WIND"
+			}
+		},
+		"f6": {
+			"name": "/projects/warpmip/shared/forcing_data/biascorrected_forcing/GRE-Disko/Disko_SWIN_200cm_5min.csv", 	
+			"skip_rows": null,
+			"sep": "\t",
+			"freq": "H",
+			"datetime_format": "%Y-%m-%d %H:%M:%S",
+			"datetime_cols": ["Date","Time"],
+			"cols_old": ["Date","Time","SRI (W/m2)","quality flag"],
+			"cols_new": {
+				"SRI (W/m2)": "FSDS"
+			}
+		},
+		"f7": {
+			"name": "/projects/warpmip/shared/forcing_data/biascorrected_forcing/GRE-Disko/Disko_LWIN_200cm_5min.csv", 	
+			"skip_rows": null,
+			"sep": "\t",
+			"freq": "H",
+			"datetime_format": "%Y-%m-%d %H:%M:%S",
+			"datetime_cols": ["Date","Time"],
+			"cols_old": ["Date","Time","LRI (W/m2)","quality flag"],
+			"cols_new": {
+				"LRI (W/m2)": "FLDS"
+			}
+		}
+	},
+	"groupby": "time.dayofyear",
+	"nc_read": {
+		"engine": "netcdf4"
+	},
+	"nc_write": {
+		"engine": "netcdf4",
+		"zlib": "TRUE",
+		"complevel": 0,
+		"shuffle": "FALSE",
+		"fillvalue": -9999,		
+		"format": "NETCDF4_CLASSIC"
+	}
+}
