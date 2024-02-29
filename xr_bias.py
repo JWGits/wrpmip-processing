@@ -20,36 +20,36 @@ def main():
             printfile.write(line + '\n')                
     # start dask cluster
     with client:
-        # copy, subset, resample netcdfs from each directory
-        L = [client.submit(xrfx.full_reanalysis_list, f) for f in config['config_files']]
-        # flatten list of returned futures list to parallize subset call
-        full_list = []
-        for site in L:
-            for i in site.result():
-                full_list.append(i)
-        # subset all files across all of dasks resources
-        L2 = [client.submit(xrfx.subset_reanalysis, f) for f in full_list]
-        wait(L2)
-        # crujra raw data test
-        #La = [client.submit(xrfx.raw_dswrf_list, f) for f in config['config_files']]
+        ## copy, subset, resample netcdfs from each directory
+        #L = [client.submit(xrfx.full_reanalysis_list, f) for f in config['config_files']]
         ## flatten list of returned futures list to parallize subset call
-        #raw_list = []
-        #for site in La:
+        #full_list = []
+        #for site in L:
         #    for i in site.result():
-        #        raw_list.append(i)
+        #        full_list.append(i)
         ## subset all files across all of dasks resources
-        #Lb = [client.submit(xrfx.subset_raw_reanalysis, f) for f in raw_list]
-        #wait(Lb)
-        #Lc = [client.submit(xrfx.concat_dswrf, f) for f in config['config_files']]
-        #wait(Lc)
-        # for each site, create list of files that will be concatenated based on datayeas
-        L3 = [client.submit(xrfx.cru_sitesubset_list, f) for f in config['config_files']]
-        # use futures list by site to concat files
-        data_list = []
-        for site in L3:
-            data_list.append(site.result())
-        L4 = [client.submit(xrfx.concat_cru_sitesubset, f) for f in data_list]
-        wait(L4)
+        #L2 = [client.submit(xrfx.subset_reanalysis, f) for f in full_list]
+        #wait(L2)
+        ## crujra raw data test
+        ##La = [client.submit(xrfx.raw_dswrf_list, f) for f in config['config_files']]
+        ### flatten list of returned futures list to parallize subset call
+        ##raw_list = []
+        ##for site in La:
+        ##    for i in site.result():
+        ##        raw_list.append(i)
+        ### subset all files across all of dasks resources
+        ##Lb = [client.submit(xrfx.subset_raw_reanalysis, f) for f in raw_list]
+        ##wait(Lb)
+        ##Lc = [client.submit(xrfx.concat_dswrf, f) for f in config['config_files']]
+        ##wait(Lc)
+        ## for each site, create list of files that will be concatenated based on datayeas
+        #L3 = [client.submit(xrfx.cru_sitesubset_list, f) for f in config['config_files']]
+        ## use futures list by site to concat files
+        #data_list = []
+        #for site in L3:
+        #    data_list.append(site.result())
+        #L4 = [client.submit(xrfx.concat_cru_sitesubset, f) for f in data_list]
+        #wait(L4)
         # combine observation data form csv files into netcdf for each site
         L5 = [client.submit(xrfx.combine_site_observations, f) for f in config['config_files']]
         wait(L5)

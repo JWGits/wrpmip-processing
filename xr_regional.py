@@ -40,62 +40,61 @@ def main(client):
             printfile.write(line + '\n')            
     
     # mkdir if it doesnt exist 
-    for model in config['config_files']:
-        mod_con = xrfx.read_config(model)
-        if Path(mod_con['output_dir']+mod_con['model_name']).exists():
-            # move existing directory to delete location
-            shutil.move(mod_con['output_dir']+mod_con['model_name'], config['delete_dir']) 
-        else:
-            # make model folders
-            Path(mod_con['output_dir']+mod_con['model_name']).mkdir(parents=True, exist_ok=True)
-            Path(mod_con['output_dir']+mod_con['model_name']).chmod(0o762)
-    shutil.move(mod_con['output_dir']+'combined', config['delete_dir']) 
+   # for model in config['config_files']:
+   #     mod_con = xrfx.read_config(model)
+   #     if Path(mod_con['output_dir']+mod_con['model_name']).exists():
+   #         # move existing directory to delete location
+   #         shutil.move(mod_con['output_dir']+mod_con['model_name'], config['delete_dir']) 
+   #     else:
+   #         # make model folders
+   #         Path(mod_con['output_dir']+mod_con['model_name']).mkdir(parents=True, exist_ok=True)
+   #         Path(mod_con['output_dir']+mod_con['model_name']).chmod(0o762)
     # print client info 
     with open(Path(p_file),"a") as pf:
         print(client.scheduler_info(), file=pf)
     
     # start dask cluster
     with client:
-        # start deleting previous folder
-        L_del = client.submit(xrfx.rmv_dir, config['delete_dir'])
-        ## remove previous folder structure and remake 
-        L0 = [client.submit(xrfx.regional_dir_prep, f) for f in config['config_files']]
-        wait(L0)
-        # create list of netcdf files to concat/merge/copy for each mo del/simulation combination
-        L1 = [client.submit(xrfx.regional_simulation_files, f) for f in itertools.product(config['config_files'], ["b1","b2","otc","sf"])]
-        full_list = []
-        for model_sim in client.gather(L1):
-            full_list.append(model_sim)
-        # process each simulation for all models
-        L2 = [client.submit(xrfx.process_simulation_files, f, config) for f in full_list] 
-        del full_list, L1
-        wait(L2)
-        ## clear and recreate site subfolders
-        #L3 = [client.submit(xrfx.site_dir_prep, f) for f in config['config_files']]
-        #wait(L3)
-        # create list of files to process from harmonized regional zarr files to sites for each model with all variables
-        L4 = [client.submit(xrfx.subsample_site_list, f, config['site_gps']) for f in itertools.product(config['config_files'], ["b1","b2","otc","sf"])]
-        full_list = []
-        for model_sim in client.gather(L4):
-            full_list.append(model_sim)
-        # process each simulation for all models
-        L5 = [client.submit(xrfx.subsample_sites, f) for f in full_list] 
-        del full_list, L2, L4 
-        wait(L5)
-        ## create site_sim directories to aggregate comparable simulations (b2,otc,sf) into site netcdfs
-        #L6 = [client.submit(xrfx.site_sim_dir_prep, f) for f in config['config_files']]
-        #wait(L6)
-        # aggregate b2,otc,sf simulations into site netcdfs
-        L7 = [client.submit(xrfx.aggregate_simulation_types, f) for f in config['config_files']] 
-        wait(L7)
-        ## create directories for combined files with all models
-        #L8 = client.submit(xrfx.combined_dir_prep, config['config_files'][0])
-        #wait(L8)
-        # aggregate all models for warming period (2000-2021) and baseline (1901-2000)
-        L9 = client.submit(xrfx.aggregate_models_warming, config['config_files'])  
-        L10 = client.submit(xrfx.aggregate_models_baseline, config['config_files'])  
-        wait(L9)
-        wait(L10)
+       # # start deleting previous folder
+       # L_del = client.submit(xrfx.rmv_dir, config['delete_dir'])
+       # ## remove previous folder structure and remake 
+       # L0 = [client.submit(xrfx.regional_dir_prep, f) for f in config['config_files']]
+       # wait(L0)
+       # # create list of netcdf files to concat/merge/copy for each mo del/simulation combination
+       # L1 = [client.submit(xrfx.regional_simulation_files, f) for f in itertools.product(config['config_files'], ["b1","b2","otc","sf"])]
+       # full_list = []
+       # for model_sim in client.gather(L1):
+       #     full_list.append(model_sim)
+       # # process each simulation for all models
+       # L2 = [client.submit(xrfx.process_simulation_files, f, config) for f in full_list] 
+       # del full_list, L1
+       # wait(L2)
+       # ## clear and recreate site subfolders
+       # L3 = [client.submit(xrfx.site_dir_prep, f) for f in config['config_files']]
+       # wait(L3)
+       # # create list of files to process from harmonized regional zarr files to sites for each model with all variables
+       # L4 = [client.submit(xrfx.subsample_site_list, f, config['site_gps']) for f in itertools.product(config['config_files'], ["b1","b2","otc","sf"])]
+       # full_list = []
+       # for model_sim in client.gather(L4):
+       #     full_list.append(model_sim)
+       # # process each simulation for all models
+       # L5 = [client.submit(xrfx.subsample_sites, f) for f in full_list] 
+       # del full_list, L2, L4 
+       # wait(L5)
+       # ## create site_sim directories to aggregate comparable simulations (b2,otc,sf) into site netcdfs
+       # L6 = [client.submit(xrfx.site_sim_dir_prep, f) for f in config['config_files']]
+       # wait(L6)
+       # # aggregate b2,otc,sf simulations into site netcdfs
+       # L7 = [client.submit(xrfx.aggregate_simulation_types, f) for f in config['config_files']] 
+       # wait(L7)
+       # ## create directories for combined files with all models
+       # L8 = client.submit(xrfx.combined_dir_prep, config['config_files'][0])
+       # wait(L8)
+       # # aggregate all models for warming period (2000-2021) and baseline (1901-2000)
+       # L9 = client.submit(xrfx.aggregate_models_warming, config['config_files'])  
+       # L10 = client.submit(xrfx.aggregate_models_baseline, config['config_files'])  
+       # wait(L9)
+       # wait(L10)
 
         # process teds data
         L_obs = client.submit(xrfx.process_ted_data, config)
@@ -105,7 +104,7 @@ def main(client):
         wait(L_erl)
         # exploratory figures
         sites = list(config['site_gps'].keys())
-        var = ['TotalResp','q10']
+        var = ['TotalResp']
         models = []
         for con in config['config_files']:
             mod_con = xrfx.read_config(con)

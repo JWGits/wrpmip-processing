@@ -21,6 +21,8 @@ from reportlab.pdfbase.pdfmetrics import stringWidth
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 from matplotlib import pyplot as plt
+import matplotlib.cm as cm
+import matplotlib as matplotlib
 import docx
 import textwrap
 import dask.config
@@ -36,9 +38,14 @@ from plotnine import (
     geom_line,
     geom_errorbar,
     geom_smooth,
+    geom_ribbon,
     stat_smooth,
+    element_rect,
+    xlim,
+    ylim,
     scale_fill_manual,
     scale_color_manual,
+    scale_color_identity,
     scale_x_continuous,
     scale_y_continuous,
     scale_x_datetime,
@@ -666,21 +673,28 @@ def concat_cru_sitesubset(f):
 def combine_site_observations(config_file):
     # read in config file for site
     config = read_config(config_file)
-    # read in columns of interest from first file
-    obs_data = pd.read_csv(config['obs']['f1']['name'], \
-        index_col=False, engine='python', skiprows=config['obs']['f1']['skip_rows'], \
-        usecols=config['obs']['f1']['cols_old'])
+    try:
+        # read in columns of interest from first file
+        obs_data = pd.read_csv(config['obs']['f1']['name'], sep=config['obs']['f1']['sep'], \
+            index_col=False, engine='python', skiprows=config['obs']['f1']['skip_rows'], \
+            usecols=config['obs']['f1']['cols_old'])
+    except:
+        # if no data files listed end function
+        print_string = 'No observation data; combine_site_observations() skipped for ' + config['site_name']
+        with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
+            print(print_string)
+        return 
     # enforce column order from subset procedure from usecols in read_csv
     obs_data = obs_data[config['obs']['f1']['cols_old']]
     # rename data columns to CLM standard
     obs_data = obs_data.rename(columns=config['obs']['f1']['cols_new'])
     # remove rows with no date/time of measurement
     obs_data = obs_data.dropna(subset=config['obs']['f1']['datetime_cols'])
-            # print statement code to use when testing/adding new sites 
-            #with option_context('display.max_rows', 10, 'display.max_columns', 10):
-            #    with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
-            #        print(obs_data.head(), file=f)
-            #        print(obs_data.dtypes, file=f)
+    # print statement code to use when testing/adding new sites 
+    with option_context('display.max_rows', 10, 'display.max_columns', 10):
+        with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
+            print(obs_data.head(), file=f)
+            print(obs_data.dtypes, file=f)
     # handle site specific idiosyncrasies
     site = config['site_name']
     match site:
@@ -706,9 +720,14 @@ def combine_site_observations(config_file):
 
         case 'USA-Toolik':
             # fix hourly timestep - cannot have 24 as hour value, only 0:23 for datetime.strptime
-            obs_data.loc[:,'hour'] = obs_data['hour'].astype(int) - 100
+            obs_data.loc[:,'hour'] = obs_data['hour'] - 100
+            obs_data['hour'] = obs_data['hour'].astype(int)
             # combine date and hour columns for timestamp -  need to pad hours with preceeding zeros
             obs_data['time'] = obs_data['date'].astype(str) + " " + obs_data['hour'].astype(str).str.zfill(4)
+            with option_context('display.max_rows', 10, 'display.max_columns', 10):
+                with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
+                    print(obs_data.head(), file=f)
+                    print(obs_data.dtypes, file=f)
             # convert TBOT from celsius to kelvin
             obs_data.loc[:,'TBOT'] = obs_data['TBOT'] + 273.15
             # make all negaive values in solar radiation zero
@@ -752,20 +771,22 @@ def combine_site_observations(config_file):
             # precip:
             with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
                 print(obs_data, file=f)
-
         case 'RUS-Seida':
-            # combine date and hour columns for timestamp -  need to pad hours with preceeding zeros
-            obs_data.loc[:,'hourGMT3'] = obs_data['hourGMT3'].astype(int)
-            obs_data['time'] = obs_data['dateGMT3'].astype(str) + " " + obs_data['hourGMT3'].astype(str).str.zfill(2)
-            # have to drop date column for resample as it only works on numeric columsn
-            obs_data = obs_data.drop(columns=['dateGMT3','hourGMT3'])
-            # have to resample to hourly b/c half of the data is hourly and other half is at variable half-hourly timesteps
-            obs_data.loc[:,'time'] = pd.to_datetime(obs_data['time'])
-            obs_data = obs_data.resample('1H', on='time').mean()
-            # resample moves time column to the dataframe index - this moves it back to a column
-            obs_data = obs_data.reset_index()
+            # make time column from datetime string
+            obs_data['time'] = obs_data['datetimeGMT3'].astype(str) # + " " + obs_data['hourGMT3'].astype(str).str.zfill(2)
+            # drop old time columns
+            obs_data = obs_data.drop(columns=['datetimeGMT3'])
+            # set to datetime pandas
+            obs_data.loc[:,'time'] = pd.to_datetime(obs_data['time'], format="%Y-%m-%d %H:%M")
+            # set index to timestamp
+            obs_data = obs_data.set_index('time')
+            # resample the sub-hourly data to hourly averages
+            obs_data = obs_data.resample('1H').mean()
+            # change index to str with correct format
+            obs_data.index = obs_data.index.strftime('%Y-%m-%d %H:%M:%S')
             # convert numerical timestamp to string for datetime.strptime to integrate back into set coding below
-            obs_data.loc[:,'time'] = obs_data['time'].astype(str)
+            obs_data = obs_data.reset_index()
+            obs_data['time'] = obs_data['time'].astype(str)
             # convert TBOT from celsius to kelvin
             obs_data.loc[:,'TBOT'] = obs_data['TBOT'] + 273.15
             # only given par - will scale up based on a par = 0.46 shortwave (shortwave = par/0.46)
@@ -779,7 +800,7 @@ def combine_site_observations(config_file):
             # pressure, windspeed seem to be in same units as clm reprocessed crujra
         case 'CAN-DaringLake':
             # read in second dataset
-            obs_data2 = pd.read_csv(config['obs']['f2']['name'], \
+            obs_data2 = pd.read_csv(config['obs']['f2']['name'], sep=config['obs']['f2']['sep'], \
                 index_col=False, engine='python', skiprows=config['obs']['f2']['skip_rows'], \
                 usecols=config['obs']['f2']['cols_old'])
             # enforce column order from subset procedure from usecols in read_csv
@@ -825,7 +846,7 @@ def combine_site_observations(config_file):
             # read other files and concat to first
             for extra_file in config['obs']['f1']['extended_files']:
                 obs_data2 = pd.read_csv(extra_file, index_col=False, engine='python', skiprows=config['obs']['f1']['skip_rows'], \
-                    usecols=config['obs']['f1']['cols_old'])
+                    usecols=config['obs']['f1']['cols_old'], sep=config['obs']['f1']['sep'])
                 # enforce column order from subset procedure from usecols in read_csv
                 obs_data2 = obs_data2[config['obs']['f1']['cols_old']]
                 # rename data columns to CLM standard
@@ -845,7 +866,7 @@ def combine_site_observations(config_file):
             # scale celsius to kelvin
             obs_data.loc[:,'TBOT'] = obs_data['TBOT'] + 273.15
             # calculate SWIN from PAR
-            obs_data.loc[:,'FSDS'] = (obs_data['PAR']/4.57)/0.46
+            obs_data.loc[:,'FSDS'] = obs_data['PAR']/2.1#4.57)/0.46
             obs_data = obs_data.drop(columns = ['PAR'])
             #WS
             # precip
@@ -859,7 +880,7 @@ def combine_site_observations(config_file):
             # read other files and concat to first
             for extra_file in config['obs']['f1']['extended_files']:
                 obs_data2 = pd.read_csv(extra_file, index_col=False, engine='python', skiprows=config['obs']['f1']['skip_rows'], \
-                    usecols=config['obs']['f1']['cols_old'])
+                    usecols=config['obs']['f1']['cols_old'], sep=config['obs']['f1']['sep'])
                 # enforce column order from subset procedure from usecols in read_csv
                 obs_data2 = obs_data2[config['obs']['f1']['cols_old']]
                 # rename data columns to CLM standard
@@ -879,16 +900,447 @@ def combine_site_observations(config_file):
             # scale celsius to kelvin
             obs_data.loc[:,'TBOT'] = obs_data['TBOT'] + 273.15
             # calculate SWIN from PAR
-            obs_data.loc[:,'FSDS'] = (obs_data['PAR']/4.57)/0.46
+            obs_data.loc[:,'FSDS'] = obs_data['PAR']/2.1#4.57)/0.46
             obs_data = obs_data.drop(columns = ['PAR'])
             #WS
             # precip
             with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
                 print(obs_data, file=f)
+        case 'CAN-CambridgeBay':
+            # read other files and concat to first
+            for extra_file in config['obs']['f1']['extended_files']:
+                obs_data2 = pd.read_csv(extra_file, index_col=False, engine='python', skiprows=config['obs']['f1']['skip_rows'], \
+                    usecols=config['obs']['f1']['cols_old'], sep=config['obs']['f1']['sep'])
+                # enforce column order from subset procedure from usecols in read_csv
+                obs_data2 = obs_data2[config['obs']['f1']['cols_old']]
+                # rename data columns to CLM standard
+                obs_data2 = obs_data2.rename(columns=config['obs']['f1']['cols_new'])
+                # remove rows with no date/time of measurement
+                obs_data2 = obs_data2.dropna(subset=config['obs']['f1']['datetime_cols'])
+                # concat file
+                obs_data = pd.concat([obs_data, obs_data2], ignore_index=True)
+            # set time from date string
+            obs_data['time'] = obs_data['Date/Time (LST)'].astype(str)
+            # bring in karasjok loop
+            # merge data streams into single dataframe
+            # adjust data/units
+            # scale celsius to kelvin
+            obs_data['TBOT'] = obs_data['TBOT'] + 273.15
+            # scale pressure - miss labeled somehow
+            obs_data['PBOT'] = obs_data['PBOT']*1000
+            # wind from km/h to m/s
+            obs_data['WIND'] = (obs_data['WIND']/3600)*1000
+            # calculate SH from RH/TBOT/PBOT
+            obs_data.loc[:,'QBOT'] = specific_humidity(obs_data['RH'], obs_data['TBOT'], obs_data['PBOT'])
+            obs_data = obs_data.drop(columns=['RH','PRECIP'])
+            with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
+                print(obs_data, file=f)
+        case 'SVA-Adventdalen':
+            # read other files and concat to first
+            for extra_file in config['obs']['f1']['extended_files']:
+                obs_data_f1e = pd.read_csv(extra_file, index_col=False, sep=config['obs']['f1']['sep'], \
+                                engine='python', skiprows=config['obs']['f1']['skip_rows'])
+                # add columns that are missing from cols_old
+                for col_name in config['obs']['f1']['cols_old']:
+                    if col_name not in list(obs_data_f1e.columns.values):
+                        obs_data_f1e[col_name] = np.NaN
+                # enforce column order from subset procedure from usecols in read_csv
+                obs_data_f1e = obs_data_f1e[config['obs']['f1']['cols_old']]
+                # rename data columns to CLM standard
+                obs_data_f1e = obs_data_f1e.rename(columns=config['obs']['f1']['cols_new'])
+                # remove rows with no date/time of measurement
+                obs_data_f1e = obs_data_f1e.dropna(subset=config['obs']['f1']['datetime_cols'])
+                # concat file
+                obs_data = pd.concat([obs_data, obs_data_f1e], ignore_index=True)
+            with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
+                print('file 1 done', file=f)
+                print(obs_data, file=f)
+                print(obs_data.dtypes, file=f)
+            # bring in lufthaven data loop
+            obs_data_f2 = pd.read_csv(config['obs']['f2']['name'], index_col=False, engine='python', sep=config['obs']['f2']['sep'], \
+                            skiprows=config['obs']['f2']['skip_rows'], usecols=config['obs']['f2']['cols_old'])
+            # rename columns from first file
+            obs_data_f2 = obs_data_f2.rename(columns=config['obs']['f2']['cols_new'])
+            for extra_file in config['obs']['f2']['extended_files']:
+                obs_data_f2e = pd.read_csv(extra_file, index_col=False, sep=config['obs']['f2']['sep'], \
+                                 engine='python', skiprows=config['obs']['f2']['skip_rows'])
+                # add columns that are missing from cols_old
+                #for col_name in config['obs']['f2']['cols_old']:
+                #    if col_name not in list(obs_data_f2e.columns.values):
+                #        obs_data_f2e[col_name] = np.NaN
+                # enforce column order from subset procedure from usecols in read_csv
+                obs_data_f2e = obs_data_f2e[config['obs']['f2']['cols_old']]
+                # rename data columns to CLM standard
+                obs_data_f2e = obs_data_f2e.rename(columns=config['obs']['f2']['cols_new'])
+                # remove rows with no date/time of measurement
+                obs_data_f2e = obs_data_f2e.dropna(subset=config['obs']['f2']['datetime_cols'])
+                # concat file
+                obs_data_f2 = pd.concat([obs_data_f2, obs_data_f2e], ignore_index=True)
+            with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
+                print('file 2 done', file=f)
+                print(obs_data_f2, file=f)
+                print(obs_data_f2.dtypes, file=f)
+            # bring in janssonhaugen data loop
+            obs_data_f3 = pd.read_csv(config['obs']['f3']['name'], index_col=False, engine='python', sep=config['obs']['f3']['sep'], \
+                            skiprows=config['obs']['f3']['skip_rows'], usecols=config['obs']['f3']['cols_old'])
+            # rename columns from first file
+            obs_data_f3 = obs_data_f3.rename(columns=config['obs']['f3']['cols_new'])
+            for extra_file in config['obs']['f3']['extended_files']:
+                obs_data_f3e = pd.read_csv(extra_file, index_col=False, sep=config['obs']['f3']['sep'], \
+                                 engine='python', skiprows=config['obs']['f3']['skip_rows'])
+                # add columns that are missing from cols_old
+                #for col_name in config['obs']['f3']['cols_old']:
+                #    if col_name not in list(obs_data_f3e.columns.values):
+                #        obs_data_f3e[col_name] = np.NaN
+                # enforce column order from subset procedure from usecols in read_csv
+                obs_data_f3e = obs_data_f3e[config['obs']['f3']['cols_old']]
+                # rename data columns to CLM standard
+                obs_data_f3e = obs_data_f3e.rename(columns=config['obs']['f3']['cols_new'])
+                # remove rows with no date/time of measurement
+                obs_data_f3e = obs_data_f3e.dropna(subset=config['obs']['f3']['datetime_cols'])
+                # concat file
+                obs_data_f3 = pd.concat([obs_data_f3, obs_data_f3e], ignore_index=True)
+            with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
+                print('file 3 done', file=f)
+                print(obs_data_f3, file=f)
+                print(obs_data_f3.dtypes, file=f)
+            # change to datetime to merge data
+            obs_data['time'] = obs_data['referenceTime'].apply(lambda x: datetime.strptime(x,'%Y-%m-%dT%H:%M:%S.%f%z'))
+            obs_data_f2['time'] = obs_data_f2['referenceTime'].apply(lambda x: datetime.strptime(x,'%Y-%m-%dT%H:%M:%S.%f%z'))
+            obs_data_f3['time'] = obs_data_f3['referenceTime'].apply(lambda x: datetime.strptime(x,'%Y-%m-%dT%H:%M:%S.%f%z'))
+            # remove old column before merge
+            obs_data = obs_data.drop(columns=['referenceTime'])
+            obs_data_f2 = obs_data_f2.drop(columns=['referenceTime'])
+            obs_data_f3 = obs_data_f3.drop(columns=['referenceTime'])
+            # merge data streams into single dataframe
+            obs_data = pd.merge(obs_data, obs_data_f2, on='time', how='outer')
+            obs_data = pd.merge(obs_data, obs_data_f3, on='time', how='outer')
+            # sort dates after merge to restore timeseries order
+            obs_data = obs_data.sort_values(by='time')
+            with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
+                print('files merged', file=f)
+                print(obs_data, file=f)
+                print(obs_data.dtypes, file=f)
+            # convert to desired text string for date
+            obs_data['time'] = obs_data['time'].apply(lambda x: x.strftime('%Y-%m-%d %H:%M:%S')).astype(str)
+            # scale celsius to kelvin
+            obs_data['TBOT'] = obs_data['TBOT'] + 273.15
+            # scale mbar to kpa
+            obs_data['PBOT'] = obs_data['PBOT']*100
+            # calculate SH from RH/TBOT/PBOT
+            obs_data.loc[:,'QBOT'] = specific_humidity(obs_data['RH'], obs_data['TBOT'], obs_data['PBOT'])
+            # remove uneeded columns
+            obs_data = obs_data.drop(columns=['RH','PRECIP'])
+            with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
+                print('data adjusted', file=f)
+                print(obs_data, file=f)
+                print(obs_data.head(), file=f)
+                print(obs_data.dtypes, file=f)
+        case 'NOR-Iskoras':
+            # read other files and concat to first
+            for extra_file in config['obs']['f1']['extended_files']:
+                obs_data_f1e = pd.read_csv(extra_file, index_col=False, sep=config['obs']['f1']['sep'],\
+                                 engine='python', skiprows=config['obs']['f1']['skip_rows'])
+                # add columns that are missing from cols_old
+                #for col_name in config['obs']['f1']['cols_old']:
+                #    if col_name not in list(obs_data_f1e.columns.values):
+                #        obs_data_f1e[col_name] = np.NaN
+                # enforce column order from subset procedure from usecols in read_csv
+                obs_data_f1e = obs_data_f1e[config['obs']['f1']['cols_old']]
+                # rename data columns to CLM standard
+                obs_data_f1e = obs_data_f1e.rename(columns=config['obs']['f1']['cols_new'])
+                # remove rows with no date/time of measurement
+                obs_data_f1e = obs_data_f1e.dropna(subset=config['obs']['f1']['datetime_cols'])
+                # concat file
+                obs_data = pd.concat([obs_data, obs_data_f1e], ignore_index=True)
+            with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
+                print('file 1 done', file=f)
+                print(obs_data, file=f)
+                print(obs_data.dtypes, file=f)
+            # bring in karasjok data
+            obs_data_f2 = pd.read_csv(config['obs']['f2']['name'], index_col=False, engine='python', sep=config['obs']['f2']['sep'], \
+                            skiprows=config['obs']['f2']['skip_rows'], usecols=config['obs']['f2']['cols_old'])
+            # rename columns from first file
+            obs_data_f2 = obs_data_f2.rename(columns=config['obs']['f2']['cols_new'])
+            for extra_file in config['obs']['f2']['extended_files']:
+                obs_data_f2e = pd.read_csv(extra_file, index_col=False, sep=config['obs']['f2']['sep'], \
+                                 engine='python', skiprows=config['obs']['f2']['skip_rows'])
+                # add columns that are missing from cols_old
+                #for col_name in config['obs']['f2']['cols_old']:
+                #    if col_name not in list(obs_data_f2e.columns.values):
+                #        obs_data_f2e[col_name] = np.NaN
+                # enforce column order from subset procedure from usecols in read_csv
+                obs_data_f2e = obs_data_f2e[config['obs']['f2']['cols_old']]
+                # rename data columns to CLM standard
+                obs_data_f2e = obs_data_f2e.rename(columns=config['obs']['f2']['cols_new'])
+                # remove rows with no date/time of measurement
+                obs_data_f2e = obs_data_f2e.dropna(subset=config['obs']['f2']['datetime_cols'])
+                # concat file
+                obs_data_f2 = pd.concat([obs_data_f2, obs_data_f2e], ignore_index=True)
+            with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
+                print('file 2 done', file=f)
+                print(obs_data_f2, file=f)
+                print(obs_data_f2.dtypes, file=f)
+            # change to datetime to merge data
+            obs_data['time'] = obs_data['referenceTime'].apply(lambda x: datetime.strptime(x,'%Y-%m-%dT%H:%M:%S.%f%z'))
+            obs_data_f2['time'] = obs_data_f2['referenceTime'].apply(lambda x: datetime.strptime(x,'%Y-%m-%dT%H:%M:%S.%f%z'))
+            # remove old column before merge
+            obs_data = obs_data.drop(columns=['referenceTime'])
+            obs_data_f2 = obs_data_f2.drop(columns=['referenceTime'])
+            # merge data streams into single dataframe
+            obs_data = pd.merge(obs_data, obs_data_f2, on='time', how='outer')
+            # sort dates after merge to restore timeseries order
+            obs_data = obs_data.sort_values(by='time')
+            with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
+                print('files merged', file=f)
+                print(obs_data, file=f)
+                print(obs_data.dtypes, file=f)
+            # convert to desired text string for date
+            obs_data['time'] = obs_data['time'].apply(lambda x: x.strftime('%Y-%m-%d %H:%M:%S')).astype(str)
+            # scale celsius to kelvin
+            obs_data['TBOT'] = obs_data['TBOT'] + 273.15
+            # scale mbar to kpa
+            obs_data['PBOT'] = obs_data['PBOT']*100
+            # calculate SH from RH/TBOT/PBOT
+            obs_data.loc[:,'QBOT'] = specific_humidity(obs_data['RH'], obs_data['TBOT'], obs_data['PBOT'])
+            # remove uneeded columns
+            obs_data = obs_data.drop(columns=['RH','PRECIP'])
+            with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
+                print('data adjusted', file=f)
+                print(obs_data, file=f)
+                print(obs_data.head(), file=f)
+                print(obs_data.dtypes, file=f)
+        case 'GRE-Zackenburg':
+            ##### read in air temp
+            f2 = pd.read_csv(config['obs']['f2']['name'], sep=config['obs']['f2']['sep'], \
+                index_col=False, engine='python', skiprows=config['obs']['f2']['skip_rows'], \
+                usecols=config['obs']['f2']['cols_old'])
+            # enforce column order from subset procedure from usecols in read_csv
+            f2 = f2[config['obs']['f2']['cols_old']]
+            # rename data columns to CLM standard
+            f2 = f2.rename(columns=config['obs']['f2']['cols_new'])
+            # remove rows with no date/time of measurement
+            f2 = f2.dropna(subset=config['obs']['f2']['datetime_cols'])
+            with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
+                print('f2 read in', file=f)
+                print(f2, file=f)
+                print(obs_data.dtypes, file=f)
+            ##### read in relative humidity
+            f3 = pd.read_csv(config['obs']['f3']['name'], sep=config['obs']['f3']['sep'], \
+                index_col=False, engine='python', skiprows=config['obs']['f3']['skip_rows'], \
+                usecols=config['obs']['f3']['cols_old'])
+            # enforce column order from subset procedure from usecols in read_csv
+            f3 = f3[config['obs']['f3']['cols_old']]
+            # rename data columns to CLM standard
+            f3 = f3.rename(columns=config['obs']['f3']['cols_new'])
+            # remove rows with no date/time of measurement
+            f3 = f3.dropna(subset=config['obs']['f3']['datetime_cols'])
+            ###### read in precipitation
+            f4 = pd.read_csv(config['obs']['f4']['name'], sep=config['obs']['f4']['sep'], \
+                index_col=False, engine='python', skiprows=config['obs']['f4']['skip_rows'], \
+                usecols=config['obs']['f4']['cols_old'])
+            # enforce column order from subset procedure from usecols in read_csv
+            f4 = f4[config['obs']['f4']['cols_old']]
+            # rename data columns to CLM standard
+            f4 = f4.rename(columns=config['obs']['f4']['cols_new'])
+            # remove rows with no date/time of measurement
+            f4 = f4.dropna(subset=config['obs']['f4']['datetime_cols'])
+            ##### read in wind speed
+            f5 = pd.read_csv(config['obs']['f5']['name'], sep=config['obs']['f5']['sep'], \
+                index_col=False, engine='python', skiprows=config['obs']['f5']['skip_rows'], \
+                usecols=config['obs']['f5']['cols_old'])
+            # enforce column order from subset procedure from usecols in read_csv
+            f5 = f5[config['obs']['f5']['cols_old']]
+            # rename data columns to CLM standard
+            f5 = f5.rename(columns=config['obs']['f5']['cols_new'])
+            # remove rows with no date/time of measurement
+            f5 = f5.dropna(subset=config['obs']['f5']['datetime_cols'])
+            ##### read in SWIN
+            f6 = pd.read_csv(config['obs']['f6']['name'], sep=config['obs']['f6']['sep'], \
+                index_col=False, engine='python', skiprows=config['obs']['f6']['skip_rows'], \
+                usecols=config['obs']['f6']['cols_old'])
+            # enforce column order from subset procedure from usecols in read_csv
+            f6 = f6[config['obs']['f6']['cols_old']]
+            # rename data columns to CLM standard
+            f6 = f6.rename(columns=config['obs']['f6']['cols_new'])
+            # remove rows with no date/time of measurement
+            f6 = f6.dropna(subset=config['obs']['f6']['datetime_cols'])
+            ##### read in LWIN 
+            f7 = pd.read_csv(config['obs']['f7']['name'], sep=config['obs']['f7']['sep'], \
+                index_col=False, engine='python', skiprows=config['obs']['f7']['skip_rows'], \
+                usecols=config['obs']['f7']['cols_old'])
+            # enforce column order from subset procedure from usecols in read_csv
+            f7 = f7[config['obs']['f7']['cols_old']]
+            # rename data columns to CLM standard
+            f7 = f7.rename(columns=config['obs']['f7']['cols_new'])
+            # remove rows with no date/time of measurement
+            f7 = f7.dropna(subset=config['obs']['f7']['datetime_cols'])
+            # subset each file by quality flag
+            quality_flags = ['good']
+            obs_data = obs_data[obs_data['Quality Flag'].isin(quality_flags)]
+            f2 = f2[f2['Quality Flag'].isin(quality_flags)]
+            f3 = f3[f3['Quality Flag'].isin(quality_flags)]
+            f4 = f4[f4['Quality Flag'].isin(quality_flags)]
+            f5 = f5[f5['Quality Flag'].isin(quality_flags)]
+            f6 = f6[f6['Quality Flag'].isin(quality_flags)]
+            f7 = f7[f7['Quality Flag'].isin(quality_flags)]
+            # make datatime column from date/time columns
+            obs_data['time'] = obs_data['Date'].astype(str) + ' ' + obs_data['Time'].astype(str)
+            f2['time'] = f2['Date'].astype(str) + ' ' + f2['Time'].astype(str) 
+            f3['time'] = f3['Date'].astype(str) + ' ' + f3['Time'].astype(str)
+            f4['time'] = f4['Date'].astype(str) + ' ' + f4['Time'].astype(str)
+            f5['time'] = f5['Date'].astype(str) + ' ' + f5['Time'].astype(str)
+            f6['time'] = f6['Date'].astype(str) + ' ' + f6['Time'].astype(str)
+            f7['time'] = f7['Date'].astype(str) + ' ' + f7['Time'].astype(str)
+            # remove quality flag, Date, and Time columns
+            obs_data = obs_data.drop(columns=['Quality Flag','Date','Time'])
+            f2 = f2.drop(columns=['Quality Flag','Date','Time'])
+            f3 = f3.drop(columns=['Quality Flag','Date','Time'])
+            f4 = f4.drop(columns=['Quality Flag','Date','Time'])
+            f5 = f5.drop(columns=['Quality Flag','Date','Time'])
+            f6 = f6.drop(columns=['Quality Flag','Date','Time'])
+            f7 = f7.drop(columns=['Quality Flag','Date','Time'])
+            # merge all datacolumns by date
+            obs_data = pd.merge(obs_data, f2, on='time', how='outer')
+            obs_data = pd.merge(obs_data, f3, on='time', how='outer')
+            obs_data = pd.merge(obs_data, f4, on='time', how='outer')
+            obs_data = pd.merge(obs_data, f5, on='time', how='outer')
+            obs_data = pd.merge(obs_data, f6, on='time', how='outer')
+            obs_data = pd.merge(obs_data, f7, on='time', how='outer')
+            # sort dates after merge to restore timeseries order
+            obs_data = obs_data.sort_values(by='time')
+            # scale celsius to kelvin
+            obs_data['TBOT'] = obs_data['TBOT'] + 273.15
+            # scale mbar to kpa
+            obs_data['PBOT'] = obs_data['PBOT']*100
+            # calculate SH from RH/TBOT/PBOT
+            obs_data.loc[:,'QBOT'] = specific_humidity(obs_data['RH'], obs_data['TBOT'], obs_data['PBOT'])
+            # remove uneeded columns
+            obs_data = obs_data.drop(columns=['RH','PRECIP'])
+            with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
+                print('data adjusted', file=f)
+                print(obs_data, file=f)
+                print(obs_data.head(), file=f)
+                print(obs_data.dtypes, file=f)
+        case 'GRE-Disko':
+            ##### read in air temp
+            with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
+                print(config['obs']['f2']['name'], file=f)
+            f2 = pd.read_csv(config['obs']['f2']['name'], sep=config['obs']['f2']['sep'], \
+                index_col=False, engine='python', skiprows=config['obs']['f2']['skip_rows'], \
+                usecols=config['obs']['f2']['cols_old'])
+            # enforce column order from subset procedure from usecols in read_csv
+            f2 = f2[config['obs']['f2']['cols_old']]
+            # rename data columns to CLM standard
+            f2 = f2.rename(columns=config['obs']['f2']['cols_new'])
+            # remove rows with no date/time of measurement
+            f2 = f2.dropna(subset=config['obs']['f2']['datetime_cols'])
+            with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
+                print('f2 read in', file=f)
+                print(f2, file=f)
+                print(obs_data.dtypes, file=f)
+            ##### read in relative humidity
+            f3 = pd.read_csv(config['obs']['f3']['name'], sep=config['obs']['f3']['sep'], \
+                index_col=False, engine='python', skiprows=config['obs']['f3']['skip_rows'], \
+                usecols=config['obs']['f3']['cols_old'])
+            # enforce column order from subset procedure from usecols in read_csv
+            f3 = f3[config['obs']['f3']['cols_old']]
+            # rename data columns to CLM standard
+            f3 = f3.rename(columns=config['obs']['f3']['cols_new'])
+            # remove rows with no date/time of measurement
+            f3 = f3.dropna(subset=config['obs']['f3']['datetime_cols'])
+            ###### read in precipitation
+            f4 = pd.read_csv(config['obs']['f4']['name'], sep=config['obs']['f4']['sep'], \
+                index_col=False, engine='python', skiprows=config['obs']['f4']['skip_rows'], \
+                usecols=config['obs']['f4']['cols_old'])
+            # enforce column order from subset procedure from usecols in read_csv
+            f4 = f4[config['obs']['f4']['cols_old']]
+            # rename data columns to CLM standard
+            f4 = f4.rename(columns=config['obs']['f4']['cols_new'])
+            # remove rows with no date/time of measurement
+            f4 = f4.dropna(subset=config['obs']['f4']['datetime_cols'])
+            ##### read in wind speed
+            f5 = pd.read_csv(config['obs']['f5']['name'], sep=config['obs']['f5']['sep'], \
+                index_col=False, engine='python', skiprows=config['obs']['f5']['skip_rows'], \
+                usecols=config['obs']['f5']['cols_old'])
+            # enforce column order from subset procedure from usecols in read_csv
+            f5 = f5[config['obs']['f5']['cols_old']]
+            # rename data columns to CLM standard
+            f5 = f5.rename(columns=config['obs']['f5']['cols_new'])
+            # remove rows with no date/time of measurement
+            f5 = f5.dropna(subset=config['obs']['f5']['datetime_cols'])
+            ##### read in SWIN
+            f6 = pd.read_csv(config['obs']['f6']['name'], sep=config['obs']['f6']['sep'], \
+                index_col=False, engine='python', skiprows=config['obs']['f6']['skip_rows'], \
+                usecols=config['obs']['f6']['cols_old'])
+            # enforce column order from subset procedure from usecols in read_csv
+            f6 = f6[config['obs']['f6']['cols_old']]
+            # rename data columns to CLM standard
+            f6 = f6.rename(columns=config['obs']['f6']['cols_new'])
+            # remove rows with no date/time of measurement
+            f6 = f6.dropna(subset=config['obs']['f6']['datetime_cols'])
+            ##### read in LWIN 
+            f7 = pd.read_csv(config['obs']['f7']['name'], sep=config['obs']['f7']['sep'], \
+                index_col=False, engine='python', skiprows=config['obs']['f7']['skip_rows'], \
+                usecols=config['obs']['f7']['cols_old'])
+            # enforce column order from subset procedure from usecols in read_csv
+            f7 = f7[config['obs']['f7']['cols_old']]
+            # rename data columns to CLM standard
+            f7 = f7.rename(columns=config['obs']['f7']['cols_new'])
+            # remove rows with no date/time of measurement
+            f7 = f7.dropna(subset=config['obs']['f7']['datetime_cols'])
+            # subset each file by quality flag
+            quality_flags = ['good']
+            obs_data = obs_data[obs_data['quality flag'].isin(quality_flags)]
+            f2 = f2[f2['quality flag'].isin(quality_flags)]
+            f3 = f3[f3['quality flag'].isin(quality_flags)]
+            f4 = f4[f4['quality flag'].isin(quality_flags)]
+            f5 = f5[f5['quality flag'].isin(quality_flags)]
+            f6 = f6[f6['quality flag'].isin(quality_flags)]
+            f7 = f7[f7['quality flag'].isin(quality_flags)]
+            # make datatime column from date/time columns
+            obs_data['time'] = obs_data['Date'].astype(str) + ' ' + obs_data['Time'].astype(str)
+            f2['time'] = f2['Date'].astype(str) + ' ' + f2['Time'].astype(str) 
+            f3['time'] = f3['Date'].astype(str) + ' ' + f3['Time'].astype(str)
+            f4['time'] = f4['Date'].astype(str) + ' ' + f4['Time'].astype(str)
+            f5['time'] = f5['Date'].astype(str) + ' ' + f5['Time'].astype(str)
+            f6['time'] = f6['Date'].astype(str) + ' ' + f6['Time'].astype(str)
+            f7['time'] = f7['Date'].astype(str) + ' ' + f7['Time'].astype(str)
+            # remove quality flag, Date, and Time columns
+            obs_data = obs_data.drop(columns=['quality flag','Date','Time'])
+            f2 = f2.drop(columns=['quality flag','Date','Time'])
+            f3 = f3.drop(columns=['quality flag','Date','Time'])
+            f4 = f4.drop(columns=['quality flag','Date','Time'])
+            f5 = f5.drop(columns=['quality flag','Date','Time'])
+            f6 = f6.drop(columns=['quality flag','Date','Time'])
+            f7 = f7.drop(columns=['quality flag','Date','Time'])
+            # merge all datacolumns by date
+            obs_data = pd.merge(obs_data, f2, on='time', how='outer')
+            obs_data = pd.merge(obs_data, f3, on='time', how='outer')
+            obs_data = pd.merge(obs_data, f4, on='time', how='outer')
+            obs_data = pd.merge(obs_data, f5, on='time', how='outer')
+            obs_data = pd.merge(obs_data, f6, on='time', how='outer')
+            obs_data = pd.merge(obs_data, f7, on='time', how='outer')
+            # sort dates after merge to restore timeseries order
+            obs_data = obs_data.sort_values(by='time')
+            # scale celsius to kelvin
+            obs_data['TBOT'] = obs_data['TBOT'] + 273.15
+            # scale mbar to kpa
+            obs_data['PBOT'] = obs_data['PBOT']*100
+            # calculate SH from RH/TBOT/PBOT
+            obs_data.loc[:,'QBOT'] = specific_humidity(obs_data['RH'], obs_data['TBOT'], obs_data['PBOT'])
+            # remove uneeded columns
+            obs_data = obs_data.drop(columns=['RH','PRECIP'])
+            with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
+                print('data adjusted', file=f)
+                print(obs_data, file=f)
+                print(obs_data.head(), file=f)
+                print(obs_data.dtypes, file=f)
     try:        
         # drop old date/time columns
         obs_data = obs_data.drop(columns=config['obs']['f1']['datetime_cols'], errors='ignore')    
         with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
+            print(obs_data['time'], file=f)
             print('past1', file=f)
         # remove duplicate timestamps
         obs_data = obs_data.drop_duplicates(subset='time')
@@ -1054,7 +1506,7 @@ def bias_calculation(f_iter):
                 else:
                     bc[var] = ds_obs[var] / ds_cru[var]
             # fill gaps in bias if data is 75% complete or greater
-            if bc[var].isnull().sum() < 0.25*len(bc[var]):
+            if bc[var].isnull().sum() < 0.05*len(bc[var]):
                 bc[var] = bc[var].interpolate_na(dim='groupvar', method='nearest')
         except Exception:
             pass
@@ -2586,8 +3038,7 @@ def plotnine_lines(f, config, out_dir):
     pd_df = pd_df.dropna()
     # annulize for second plot
     da = da.sel(time=is_summer(da['time.month'])) 
-    ds_annual = da.resample(time='AS').mean('time')
-    ds_annual['time'] = ds_annual['time'] + xr.coding.cftime_offsets.MonthEnd(6)
+    ds_annual = da.resample(time='AS').sum('time')
     # annudal data
     pd_df_annual = ds_annual.to_dataframe()
     pd_df_annual = pd_df_annual.reset_index()
@@ -2663,7 +3114,7 @@ def plotnine_scatter(f, config, out_dir):
     func_curves = pd.read_csv(func_curves_file)
     # function to subset only summer months
     def is_summer(month):
-        return (month >= 5) & (month <= 9)
+        return (month >= 5) & (month <= 7)
     # check maximum Total Respiration value for plots
     #ds = ds.where(ds['SoilTemp'] < 150)
     #ds_mean = ds[['TotalResp','SoilTemp']].sel(time=is_summer(ds[['TotalResp','SoilTemp']].time.dt.month)).resample(time='M').mean('time')
@@ -2683,6 +3134,7 @@ def plotnine_scatter(f, config, out_dir):
     # deal with variable site/model/sims and variable depth increments
     listed = False
     groups = 'site'
+    color_base = 'none'
     other_vars = ['sim', 'model']
     if isinstance(var, str) & isinstance(models, str) & isinstance(sites, str) & isinstance(sims, str):
         file_name = var + '_by_time_' + models + '_' + sites[:7] + '_' + sims
@@ -2693,16 +3145,19 @@ def plotnine_scatter(f, config, out_dir):
         file_part = models + '_' + '_'.join(sites_chopped) + '_' + sims 
         listed = True
         groups = 'site'
+        color_base = 'site'
         other_vars = ['model', 'sim']
     if isinstance(models, list):
         file_part = '_'.join(models) + '_' + sites[:7] + '_' + sims
         listed = True
         groups = 'model'
+        color_base = 'model'
         other_vars = ['sim', 'site']
     if isinstance(sims, list):
         file_part = models + '_' + sites[:7] + '_' + '_'.join(sims)
         listed = True
         groups = 'sim'
+        color_base = 'sim'
         other_vars = ['model', 'site']
     # create file name if any lists present
     if listed == True:
@@ -2712,8 +3167,9 @@ def plotnine_scatter(f, config, out_dir):
     pd_df = ds.to_dataframe()
     pd_df_test = ds.unstack()
     pd_df = pd_df.reset_index()
-    pd_df['ID'] =  pd_df[groups].astype(str).str.cat(pd_df[other_vars].astype(str), sep='_')
-    pd_df = pd_df.set_index('ID', drop=False)
+    #pd_df['ID'] =  pd_df[groups].astype(str).str.cat(pd_df[other_vars].astype(str), sep='_')
+    pd_df['ID'] =  pd_df[groups].astype(str)
+    pd_df = pd_df.sort_values(by=['ID'])
     pd_df[var].replace([np.inf, -np.inf], np.nan, inplace=True)
     pd_df = pd_df.dropna()
     # monthly aggregation
@@ -2721,84 +3177,231 @@ def plotnine_scatter(f, config, out_dir):
     # monthly data
     pd_df_monthly = ds_monthly.to_dataframe()
     pd_df_monthly = pd_df_monthly.reset_index()
-    pd_df_monthly['ID'] =  pd_df_monthly[groups].astype(str).str.cat(pd_df_monthly[other_vars].astype(str), sep='_')
-    pd_df_monthly = pd_df_monthly.set_index('ID', drop=False)
+    #pd_df_monthly['ID'] =  pd_df_monthly[groups].astype(str).str.cat(pd_df_monthly[other_vars].astype(str), sep='_')
+    pd_df_monthly['ID'] =  pd_df_monthly[groups].astype(str)
+    pd_df_monthly = pd_df_monthly.sort_values(by=['ID'])
     pd_df_monthly[var].replace([np.inf, -np.inf], np.nan, inplace=True)
     pd_df_monthly = pd_df_monthly.dropna()
     # custome color map
-    plot_colors = ['blue','gold','red','olive','purple','orange','green','cyan','magenta','brown','gray','black']
-    fill_blanks = ['#ffffff00'] * len(plot_colors)
+    def color_mapper(value, cmap_name='plasma', vmin=64, vmax=79):
+        # norm = plt.Normalize(vmin, vmax)
+        norm = matplotlib.colors.Normalize(vmin=vmin, vmax=vmax)
+        cmap = cm.get_cmap(cmap_name)  # PiYG
+        rgb = cmap(norm(abs(value)))[:3]  # will return rgba, we take only first 3 so we get rgb
+        color = matplotlib.colors.rgb2hex(rgb)
+        return color
+    #plot_colors = ['blue','gold','red','olive','purple','orange','green','cyan','magenta','brown','gray','black']
+    #fill_blanks = ['#ffffff00'] * len(plot_colors)
     # make color column for plotting consistent colors
-
-    # output csv to inspect
-    pd_df.to_csv(config['output_dir'] + 'combined/' + out_dir + '/' + file_name + '.csv')
-    pd_df_monthly.to_csv(config['output_dir'] + 'combined/' + out_dir + '/' + file_name + '_monthly.csv')
+    pd_df['color'] = 'dodgerblue'
+    pd_df_monthly['color'] = 'dodgerblue'
+    if color_base == 'sim':
+        pd_df.loc[pd_df['sim'] == 'b2', 'color'] = 'blue' 
+        pd_df.loc[pd_df['sim'] == 'otc', 'color'] = 'gold' 
+        pd_df.loc[pd_df['sim'] == 'sf', 'color'] = 'red'
+        pd_df_monthly.loc[pd_df_monthly['sim'] == 'b2', 'color'] = 'blue' 
+        pd_df_monthly.loc[pd_df_monthly['sim'] == 'otc', 'color'] = 'gold' 
+        pd_df_monthly.loc[pd_df_monthly['sim'] == 'sf', 'color'] = 'red'
+    elif color_base == 'model':
+        pd_df.loc[pd_df['model'] == 'CLM5', 'color'] = '#cc0000' 
+        pd_df.loc[pd_df['model'] == 'CLM5-ExIce', 'color'] = '#e69138' 
+        pd_df.loc[pd_df['model'] == 'ELM2-NGEE', 'color'] = '#f1c232' 
+        pd_df.loc[pd_df['model'] == 'ecosys', 'color'] = '#6aa84f' 
+        pd_df.loc[pd_df['model'] == 'JSBACH', 'color'] = '#45818e' 
+        pd_df.loc[pd_df['model'] == 'UVic-ESCM', 'color'] = '#3c78d8' 
+        pd_df_monthly.loc[pd_df_monthly['model'] == 'CLM5', 'color'] = '#cc0000' 
+        pd_df_monthly.loc[pd_df_monthly['model'] == 'CLM5-ExIce', 'color'] = '#e69138' 
+        pd_df_monthly.loc[pd_df_monthly['model'] == 'ELM2-NGEE', 'color'] = '#f1c232' 
+        pd_df_monthly.loc[pd_df_monthly['model'] == 'ecosys', 'color'] = '#6aa84f' 
+        pd_df_monthly.loc[pd_df_monthly['model'] == 'JSBACH', 'color'] = '#45818e' 
+        pd_df_monthly.loc[pd_df_monthly['model'] == 'UVic-ESCM', 'color'] = '#3c78d8' 
+    elif color_base == 'site':
+        pd_df.loc[pd_df['site'] == 'USA-Atqasuk',       'color'] = '#cc0000'#color_mapper(70.5)
+        pd_df.loc[pd_df['site'] == 'USA-Utqiagvik',     'color'] = '#e69138'#color_mapper(71.3)
+        pd_df.loc[pd_df['site'] == 'USA-Toolik',        'color'] = '#f1c232'#color_mapper(68.8)
+        pd_df.loc[pd_df['site'] == 'USA-EightMileLake', 'color'] = '#6aa84f'#color_mapper(63.9)
+        pd_df.loc[pd_df['site'] == 'SWE-Abisko',        'color'] = '#45818e'#color_mapper(68.4)
+        pd_df.loc[pd_df['site'] == 'SVA-Adventdalen',   'color'] = '#3c78d8'#color_mapper(78.2)
+        pd_df.loc[pd_df['site'] == 'RUS-Seida',         'color'] = '#3d85c6'#color_mapper(67.1)
+        pd_df.loc[pd_df['site'] == 'GRE-Zackenburg',    'color'] = '#674ea7'#color_mapper(74.5)
+        pd_df.loc[pd_df['site'] == 'GRE-Disko',         'color'] = '#a64d79'#color_mapper(69.3)
+        pd_df.loc[pd_df['site'] == 'CAN-DaringLake',    'color'] = '#85200c'#color_mapper(64.9)
+        pd_df_monthly.loc[pd_df_monthly['site'] == 'USA-Atqasuk',       'color'] = '#cc0000'#color_mapper(70.5) 
+        pd_df_monthly.loc[pd_df_monthly['site'] == 'USA-Utqiagvik',     'color'] = '#e69138'#color_mapper(71.3)
+        pd_df_monthly.loc[pd_df_monthly['site'] == 'USA-Toolik',        'color'] = '#f1c232'#color_mapper(68.8)
+        pd_df_monthly.loc[pd_df_monthly['site'] == 'USA-EightMileLake', 'color'] = '#6aa84f'#color_mapper(63.9)
+        pd_df_monthly.loc[pd_df_monthly['site'] == 'SWE-Abisko',        'color'] = '#45818e'#color_mapper(68.4)
+        pd_df_monthly.loc[pd_df_monthly['site'] == 'SVA-Adventdalen',   'color'] = '#3c78d8'#color_mapper(78.2)
+        pd_df_monthly.loc[pd_df_monthly['site'] == 'RUS-Seida',         'color'] = '#3d85c6'#color_mapper(67.1)
+        pd_df_monthly.loc[pd_df_monthly['site'] == 'GRE-Zackenburg',    'color'] = '#674ea7'#color_mapper(74.5)
+        pd_df_monthly.loc[pd_df_monthly['site'] == 'GRE-Disko',         'color'] = '#a64d79'#color_mapper(69.3)
+        pd_df_monthly.loc[pd_df_monthly['site'] == 'CAN-DaringLake',    'color'] = '#85200c'#color_mapper(64.9)
+    if groups == 'site':
+        with open(Path(config['output_dir'] + 'combined/scatter_debug.txt'), 'w') as pf:
+            with pd.option_context('display.max_columns', None):
+                print('daily data:', file=pf)
+                print(pd_df.dtypes, file=pf)
+                print(pd_df, file=pf)
+                print('scaled monthly data subset:', file=pf)
+                print(pd_df_monthly.dtypes, file=pf)
+                print(pd_df_monthly, file=pf)
+    # remove repiration values below zero respiration and zero soil temperature
+    pd_df_scaled_daily = pd_df.loc[np.logical_and(pd_df.TotalResp > 0, pd_df.SoilTemp_10cm > 0)]
+    pd_df_scaled_monthly = pd_df_monthly.loc[np.logical_and(pd_df_monthly.TotalResp > 0,pd_df_monthly.SoilTemp_10cm > 0)]
+    if groups == 'site':
+        with open(Path(config['output_dir'] + 'combined/scatter_debug.txt'), 'a') as pf:
+            with pd.option_context('display.max_columns', None):
+                print('scaled daily data subset:', file=pf)
+                print(pd_df_scaled_daily.dtypes, file=pf)
+                print(pd_df_scaled_daily, file=pf)
+                print('scaled monthly data subset:', file=pf)
+                print(pd_df_scaled_monthly.dtypes, file=pf)
+                print(pd_df_scaled_monthly, file=pf)
+    # scale respiration for each ID group by value closest to zero
+    for name, group in pd_df_scaled_daily.groupby('ID', observed=True):
+        try:
+            # select respiration value at lowest soil temp
+            resp_at_zero_daily = group.nsmallest(5,'SoilTemp_10cm').TotalResp.iloc[0]
+            # divide all groups values by resp_at_zero
+            pd_df_scaled_daily.loc[pd_df_scaled_daily['ID'] == name, 'TotalResp'] /= resp_at_zero_daily
+        except:
+            continue
+    # scale respiration for each ID group by value closest to zero
+    for name, group in pd_df_scaled_monthly.groupby('ID', observed=True):
+        try:
+            # select respiration value at lowest soil temp
+            resp_at_zero_monthly = group.nsmallest(5,'SoilTemp_10cm').TotalResp.iloc[0]
+            # divide all groups values by resp_at_zero
+            pd_df_scaled_monthly.loc[pd_df_scaled_monthly['ID'] == name, 'TotalResp'] /= resp_at_zero_monthly
+        except:
+            continue
+    if groups == 'site':
+        with open(Path(config['output_dir'] + 'combined/scatter_debug.txt'), 'a') as pf:
+            with pd.option_context('display.max_columns', None):
+                print('scaled daily data subset:', file=pf)
+                print(pd_df_scaled_daily.dtypes, file=pf)
+                print(pd_df_scaled_daily, file=pf)
+                print('scaled monthly data subset:', file=pf)
+                print(pd_df_scaled_monthly.dtypes, file=pf)
+                print(pd_df_scaled_monthly, file=pf)
     # xaxis label
     if var == 'TotalResp':
         x_label = r'Soil Temperature ($^\circ$C)'
         y_label = r'Ecosystem Respiration (g C $m^{-2}$ $d^{-1}$)'
+        y_label_scaled = r'Ecosystem Respiration (normalized)'
+        # calculate exponential fit curves
         # define exponent function for optimization
         def exp_func(x,a,b):
             return a * np.exp(b*x)
         # define exponential regression function
         def exp_regress(x_data, y_data):
-            p0 = [0.01, 0.1]
+            p0 = [1, 0.1]
             popt, pcov = curve_fit(exp_func, x_data.to_numpy(), y_data.to_numpy(), p0)
             return popt
         # calculate daily data fits
-        pd_df['a'] = np.nan
-        pd_df['b'] = np.nan
-        for name, group in pd_df.groupby('ID'):
-            coefs = exp_regress(group['SoilTemp_10cm'], group[var])
-            pd_df.loc[pd_df['ID'] == name, 'a'] = coefs[0]
-            pd_df.loc[pd_df['ID'] == name, 'b'] = coefs[1]
-        pd_df['exp_pred'] = pd_df['a']*np.exp(pd_df['b']*pd_df['SoilTemp_10cm']) 
+        pd_df_scaled_daily['a'] = np.nan
+        pd_df_scaled_daily['b'] = np.nan
+        for name, group in pd_df_scaled_daily.groupby('ID', observed=True):
+            try:
+                if groups == 'site':
+                    with open(Path(config['output_dir'] + 'combined/scatter_debug.txt'), 'a') as pf:
+                        print(name, file=pf)
+                        print(group, file=pf)
+                coefs = exp_regress(group['SoilTemp_10cm'], group[var])
+                pd_df_scaled_daily.loc[pd_df_scaled_daily['ID'] == name, 'a'] = coefs[0]
+                pd_df_scaled_daily.loc[pd_df_scaled_daily['ID'] == name, 'b'] = coefs[1]
+            except:
+                continue
+        pd_df_scaled_daily['exp_pred'] = pd_df_scaled_daily['a']*np.exp(pd_df_scaled_daily['b']*pd_df_scaled_daily['SoilTemp_10cm']) 
+        pd_df_scaled_daily = pd_df_scaled_daily.dropna()
+        if groups == 'site':
+            with open(Path(config['output_dir'] + 'combined/scatter_debug.txt'), 'a') as pf:
+                with pd.option_context('display.max_columns', None):
+                    print('daily scale factor:', file=pf)
+                    print(pd_df_scaled_daily, file=pf)
         # calculate monthly data fits
-        pd_df_monthly['a'] = np.nan
-        pd_df_monthly['b'] = np.nan
-        for name, group in pd_df_monthly.groupby('ID'):
-            coefs = exp_regress(group['SoilTemp_10cm'], group[var])
-            pd_df_monthly.loc[pd_df_monthly['ID'] == name, 'a'] = coefs[0]
-            pd_df_monthly.loc[pd_df_monthly['ID'] == name, 'b'] = coefs[1]
-        pd_df_monthly['exp_pred'] = pd_df_monthly['a']*np.exp(pd_df_monthly['b']*pd_df_monthly['SoilTemp_10cm']) 
-    elif var == 'q10':
-        x_label = r'Soil Temperature ($^\circ$C)'
-        y_label = r'q10 (unitless)'
-        pd_df['exp_pred'] = np.nan
-        pd_df_monthly['exp_pred'] = np.nan
+        pd_df_scaled_monthly['a'] = np.nan
+        pd_df_scaled_monthly['b'] = np.nan
+        for name, group in pd_df_scaled_monthly.groupby('ID', observed=True):
+            try:
+                if groups == 'site':
+                    with open(Path(config['output_dir'] + 'combined/scatter_debug.txt'), 'a') as pf:
+                        print(name, file=pf)
+                        print(group, file=pf)
+                coefs = exp_regress(group['SoilTemp_10cm'], group[var])
+                pd_df_scaled_monthly.loc[pd_df_scaled_monthly['ID'] == name, 'a'] = coefs[0]
+                pd_df_scaled_monthly.loc[pd_df_scaled_monthly['ID'] == name, 'b'] = coefs[1]
+            except:
+                continue
+        pd_df_scaled_monthly['exp_pred'] = pd_df_scaled_monthly['a']*np.exp(pd_df_scaled_monthly['b']*pd_df_scaled_monthly['SoilTemp_10cm']) 
+        pd_df_scaled_monthly = pd_df_scaled_monthly.dropna()
+        #pd_df['exp_pred'] = np.nan
+        #pd_df_monthly['exp_pred'] = np.nan
+    if groups == 'site':
+        with open(Path(config['output_dir'] + 'combined/scatter_debug.txt'), 'a') as pf:
+            with pd.option_context('display.max_columns', None):
+                print('scaled daily data subset:', file=pf)
+                print(pd_df_scaled_daily.dtypes, file=pf)
+                print(pd_df_scaled_daily, file=pf)
+                print('scaled monthly data subset:', file=pf)
+                print(pd_df_scaled_monthly.dtypes, file=pf)
+                print(pd_df_scaled_monthly, file=pf)
+                print('unique ID values', file=pf)
+                print(pd_df_scaled_daily['ID'].unique(), file=pf)
+                print(pd_df_scaled_monthly['ID'].unique(), file=pf)
+                print('unique color values', file=pf)
+                print(pd_df_scaled_daily['color'].unique(), file=pf)
+                print(pd_df_scaled_monthly['color'].unique(), file=pf)
+    # output csv to inspect
+    pd_df.to_csv(config['output_dir'] + 'combined/' + out_dir + '/' + file_name + '.csv')
+    pd_df_monthly.to_csv(config['output_dir'] + 'combined/' + out_dir + '/' + file_name + '_monthly.csv')
+    pd_df_scaled_daily.to_csv(config['output_dir'] + 'combined/' + out_dir + '/' + file_name + '_scaled_daily.csv')
+    pd_df_scaled_monthly.to_csv(config['output_dir'] + 'combined/' + out_dir + '/' + file_name + '_scaled_monthly.csv')
+    # create the correct categorical labels for plots
+    for factor_col in ['ID','color']:
+        pd_df[factor_col] = pd_df[factor_col].astype('category')
+        pd_df_monthly[factor_col] = pd_df_monthly[factor_col].astype('category')
+        pd_df_scaled_monthly[factor_col] = pd_df_scaled_monthly[factor_col].astype('category')
+        pd_df_scaled_daily[factor_col] = pd_df_scaled_daily[factor_col].astype('category')
+   # elif var == 'q10':
+   #     x_label = r'Soil Temperature ($^\circ$C)'
+   #     y_label = r'q10 (unitless)'
+   #     pd_df['exp_pred'] = np.nan
+   #     pd_df_monthly['exp_pred'] = np.nan
     # plotnine graph daily
-    p = ggplot(pd_df, aes(x='SoilTemp_10cm', y=var, group='ID', color='ID')) + \
+    p = ggplot(pd_df, aes(x='SoilTemp_10cm', y=var, group='color', color='color')) + \
         labs(x=x_label, y=y_label) + \
-        geom_point() + \
-        geom_line(aes(y=pd_df['exp_pred'])) + \
-        scale_fill_manual(values = fill_blanks) + \
-        scale_color_manual(plot_colors) + \
-        guides(color = guide_legend(reverse=True)) + \
+        geom_point(alpha=0.5, fill='None', size=1.2) + \
+        scale_color_identity(name=groups, guide='legend', labels=list(pd_df['ID'].unique())) + \
+        xlim(0,30) + \
+        ylim(0,30) + \
         theme_bw() + \
         theme(
             axis_text_x = element_text(angle = 90),
             axis_line = element_line(colour = "black"),
             legend_text=element_text(size=8),
+            legend_key=element_rect(fill = "white"),
             panel_grid_major = element_blank(),
             panel_grid_minor = element_blank(),
             panel_border = element_blank(),
             panel_background = element_blank()
         )
+        #scale_color_manual(labels=pd_df['ID'].unique(), values=pd_df['color'].unique()) + \
     #if var == 'TotalResp':
     #    p = p + geom_line(aes(y='exp_pred'))
     # plotnine graph monthly
-    p2 = ggplot(pd_df_monthly, aes(x='SoilTemp_10cm', y=var, group='ID', color='ID')) + \
+    p2 = ggplot(pd_df_monthly, aes(x='SoilTemp_10cm', y=var, group='color', color='color')) + \
         labs(x=x_label, y=y_label) + \
-        geom_point() + \
-        geom_line(aes(y=pd_df_monthly['exp_pred'])) + \
-        scale_fill_manual(values = fill_blanks) + \
-        scale_color_manual(plot_colors) + \
-        guides(color = guide_legend(reverse=True)) + \
+        geom_point(alpha=0.5, fill='None', size=1.2) + \
+        scale_color_identity(name=groups, guide='legend', labels=list(pd_df_monthly['ID'].unique())) + \
+        xlim(0,30) + \
+        ylim(0,30) + \
         theme_bw() + \
         theme(
             axis_text_x = element_text(angle = 90),
             axis_line = element_line(colour = "black"),
             legend_text=element_text(size=8),
+            legend_key=element_rect(fill = "white"),
             panel_grid_major = element_blank(),
             panel_grid_minor = element_blank(),
             panel_border = element_blank(),
@@ -2807,10 +3410,69 @@ def plotnine_scatter(f, config, out_dir):
     #    # example of axis controls for plots 
     #    #scale_x_continuous(limits=(0, 30)) + \
     #    #scale_y_continuous(limits=(0, 8e-5)) + \
+    # scaled plots with jeralyn's functional benchmrk curves
+    # plotnine graph daily
+    p3 = ggplot(pd_df_scaled_daily, aes(x='SoilTemp_10cm', y=var, group='color',  color='color')) + \
+        labs(x=x_label, y=y_label_scaled) + \
+        geom_point(alpha=0.5, fill='None', size=1.2) + \
+        geom_line(aes(y='exp_pred'), size=1) + \
+        scale_color_identity(name=groups, guide='legend', labels=list(pd_df_scaled_daily['ID'].unique())) + \
+        geom_ribbon(func_curves, aes(x=func_curves['soil_temp'], \
+            ymin=func_curves['allsites_ctl_lower_bound'], \
+            ymax=func_curves['allsites_ctl_upper_bound']), \
+            fill='grey', alpha=0.5, inherit_aes=False) + \
+        geom_line(func_curves, aes(x=func_curves['soil_temp'], y=func_curves['allsites_ctl_reco']), \
+            color='black', linetype='dashed', size=1, inherit_aes=False) + \
+        xlim(0,30) + \
+        ylim(0,30) + \
+        theme_bw() + \
+        theme(
+            axis_text_x = element_text(angle = 90),
+            axis_line = element_line(colour = "black"),
+            legend_text=element_text(size=8),
+            legend_key=element_rect(fill = "white"),
+            panel_grid_major = element_blank(),
+            panel_grid_minor = element_blank(),
+            panel_border = element_blank(),
+            panel_background = element_blank()
+        )
+        #scale_color_manual(labels=pd_df_scaled_daily['ID'].unique(), values=pd_df_scaled_daily['color'].unique()) + \
+    #if var == 'TotalResp':
+    #    p = p + geom_line(aes(y='exp_pred'))
+    # plotnine graph monthly
+    p4 = ggplot(pd_df_scaled_monthly, aes(x='SoilTemp_10cm', y=var, group='color', color='color')) + \
+        labs(x=x_label, y=y_label_scaled) + \
+        geom_point(alpha=0.5, fill='None', size=1.2) + \
+        geom_line(aes(y='exp_pred'), size=1)+ \
+        scale_color_identity(name=groups, guide='legend', labels=list(pd_df_scaled_monthly['ID'].unique())) + \
+        geom_ribbon(func_curves, aes(x=func_curves['soil_temp'], \
+            ymin=func_curves['allsites_ctl_lower_bound'], \
+             ymax=func_curves['allsites_ctl_upper_bound']), \
+            fill='grey', alpha=0.5, inherit_aes=False) + \
+        geom_line(func_curves, aes(x=func_curves['soil_temp'], y=func_curves['allsites_ctl_reco']), \
+            color='black', linetype='dashed', size=1, inherit_aes=False) + \
+        xlim(0,30) + \
+        ylim(0,30) + \
+        theme_bw() + \
+        theme(
+            axis_text_x = element_text(angle = 90),
+            axis_line = element_line(colour = "black"),
+            legend_text=element_text(size=8),
+            legend_key=element_rect(fill = "white"),
+            panel_grid_major = element_blank(),
+            panel_grid_minor = element_blank(),
+            panel_border = element_blank(),
+            panel_background = element_blank()
+        )
+        #scale_color_manual(labels=pd_df_scaled_monthly['ID'].unique(), values=pd_df_scaled_monthly['color'].unique()) + \
     # output graph
     p.save(filename=file_name+'.png', path=config['output_dir']+'combined/'+out_dir, \
         height=5, width=8, units='in', dpi=300)
     p2.save(filename=file_name+'_monthly.png', path=config['output_dir']+'combined/'+out_dir, \
+        height=5, width=8, units='in', dpi=300)
+    p3.save(filename=file_name+'_scaled.png', path=config['output_dir']+'combined/'+out_dir, \
+        height=5, width=8, units='in', dpi=300)
+    p4.save(filename=file_name+'_scaled_monthly.png', path=config['output_dir']+'combined/'+out_dir, \
         height=5, width=8, units='in', dpi=300)
 
 def plotnine_scatter_delta(f, config, out_dir): 
@@ -2947,7 +3609,7 @@ def process_ted_data(config):
     # read in csv file, parse datstime from date column
     pd_obs = pd.read_csv(obs_raw_file)
     # Subset, Harmonize needed columns and factors 
-    pd_obs = pd_obs[['date','plot.id','treatment','reco.sum','t10.filled.mean','wtd','alt']]
+    pd_obs = pd_obs[['date','plot.id','treatment','reco.sum','t10.filled.mean','wtd','td']]
     pd_obs = pd_obs.rename(columns={
             'date': 'time',
             'plot.id': 'plot',
@@ -2955,7 +3617,7 @@ def process_ted_data(config):
             'reco.sum': 'obs_TotalResp',
             't10.filled.mean': 'obs_SoilTemp',
             'wtd': 'obs_WTD',
-            'alt': 'obs_ALT'})
+            'td': 'obs_ALT'})
     pd_obs.loc[pd_obs.sim == 'Control','sim'] = 'b2'
     pd_obs.loc[pd_obs.sim == 'Air Warming','sim'] = 'otc'
     pd_obs.loc[pd_obs.sim == 'Soil Warming','sim'] = 'sf'
@@ -2964,7 +3626,7 @@ def process_ted_data(config):
     pd_obs['obs_ALT'] = (pd_obs['obs_ALT']/100)*(-1)
     pd_obs['obs_WTD'] = (pd_obs['obs_WTD']/100)*(-1)
     with open(Path('/projects/warpmip/shared/ted_data/ted_debug.txt'), 'w') as pf:
-        with pd.option_context('display.max_columns', None):
+        with pd.option_context('display.max_columns', None, 'display.max_rows', 20):
             print('Healy observations after subset, hamonization:', file=pf)
             print(pd_obs.dtypes, file=pf)
             print(pd_obs, file=pf)
@@ -2972,29 +3634,66 @@ def process_ted_data(config):
     pd_obs = pd_obs.set_index(['time','plot','sim'])
     # remove duplicated values (all from 2018) some error in heidis code 
     pd_obs = pd_obs[~pd_obs.index.duplicated()]
+    with open(Path('/projects/warpmip/shared/ted_data/ted_debug.txt'), 'a') as pf:
+        with pd.option_context('display.max_columns', None, 'display.max_rows', 20):
+            print('duplicated removal:', file=pf)
+            print(pd_obs.dtypes, file=pf)
+            print(pd_obs, file=pf)
     # create datetime index
     pd_obs = pd_obs.reset_index()
+    with open(Path('/projects/warpmip/shared/ted_data/ted_debug.txt'), 'a') as pf:
+        with pd.option_context('display.max_columns', None, 'display.max_rows', 100):
+            print('reset index:', file=pf)
+            print(pd_obs.dtypes, file=pf)
+            print(pd_obs, file=pf)
     pd_obs['time'] = pd.to_datetime(pd_obs['time'])
     pd_obs['time'] = pd_obs['time'].dt.strftime('%Y-%m-%d')
+    with open(Path('/projects/warpmip/shared/ted_data/ted_debug.txt'), 'a') as pf:
+        with pd.option_context('display.max_columns', None, 'display.max_rows', 100):
+            print('datetime and string edit:', file=pf)
+            print(pd_obs.dtypes, file=pf)
+            print(pd_obs, file=pf)
     datetime_index = pd.DatetimeIndex(pd_obs['time'])
     pd_obs['month'] = datetime_index.month
     pd_obs['year'] = datetime_index.year 
-    pd_obs = pd_obs.set_index(datetime_index)
-    pd_obs = pd_obs.loc[(pd_obs.index > datetime(year=2009,month=1,day=1)) & (pd_obs.index < datetime(year=2021,month=12,day=31))]
     with open(Path('/projects/warpmip/shared/ted_data/ted_debug.txt'), 'a') as pf:
-        with pd.option_context('display.max_columns', None):
-            print('Healy observations after subset, hamonization:', file=pf)
+        with pd.option_context('display.max_columns', None, 'display.max_rows', 100):
+            print('month and year added:', file=pf)
             print(pd_obs.dtypes, file=pf)
             print(pd_obs, file=pf)
-    # aggregate daily data to year/month/plot/sim
-    pd_obs_monthly = pd_obs.groupby(['year','month','plot','sim']).agg({
+    pd_obs = pd_obs.set_index(datetime_index)
+    pd_obs = pd_obs.drop(columns=['time'])
+    with open(Path('/projects/warpmip/shared/ted_data/ted_debug.txt'), 'a') as pf:
+        with pd.option_context('display.max_columns', None, 'display.max_rows', 100):
+            print('set index with time:', file=pf)
+            print(pd_obs.dtypes, file=pf)
+            print(pd_obs, file=pf)
+    pd_obs = pd_obs.loc[(pd_obs.index > datetime(year=2009,month=1,day=1)) & (pd_obs.index < datetime(year=2021,month=12,day=31))]
+    with open(Path('/projects/warpmip/shared/ted_data/ted_debug.txt'), 'a') as pf:
+        with pd.option_context('display.max_columns', None, 'display.max_rows', 100):
+            print('time subset to 2009-2021:', file=pf)
+            print(pd_obs.dtypes, file=pf)
+            print(pd_obs, file=pf)
+    pd_obs = pd_obs.reset_index()
+    pd_obs = pd_obs.set_index(['time','plot','sim'])
+    with open(Path('/projects/warpmip/shared/ted_data/ted_debug.txt'), 'a') as pf:
+        with pd.option_context('display.max_columns', None, 'display.max_rows', 100):
+            print('index reset:', file=pf)
+            print(pd_obs.dtypes, file=pf)
+            print(pd_obs, file=pf)
+    # aggregate daily data to year/month/plot/simi
+    pd_obs_monthly = pd_obs.groupby([
+        pd.Grouper(level='time', freq='M'),
+        pd.Grouper(level='plot'),
+        pd.Grouper(level='sim')
+    ]).agg({
         'obs_TotalResp': 'sum',
         'obs_SoilTemp': 'mean',
         'obs_WTD': 'mean',
         'obs_ALT': 'max'})
     pd_obs_monthly = pd_obs_monthly.reset_index()
     with open(Path('/projects/warpmip/shared/ted_data/ted_debug.txt'), 'a') as pf:
-        with pd.option_context('display.max_columns', None):
+        with pd.option_context('display.max_columns', None, 'display.max_rows', 100):
             print('Healy observations month/plot/treatment aggregation:', file=pf)
             print(pd_obs_monthly.dtypes, file=pf)
             print(pd_obs_monthly, file=pf)
@@ -3003,10 +3702,10 @@ def process_ted_data(config):
         'obs_TotalResp': 'mean',
         'obs_SoilTemp': 'mean',
         'obs_WTD': 'mean',
-        'obs_ALT': 'max'})
+        'obs_ALT': 'mean'})
     pd_obs_monthly = pd_obs_monthly.reset_index()
     with open(Path('/projects/warpmip/shared/ted_data/ted_debug.txt'), 'a') as pf:
-        with pd.option_context('display.max_columns', None):
+        with pd.option_context('display.max_columns', None, 'display.max_rows', 100):
             print('Healy observations month/plot/treatment aggregation:', file=pf)
             print(pd_obs_monthly.dtypes, file=pf)
             print(pd_obs_monthly, file=pf)
@@ -3059,7 +3758,7 @@ def process_ted_data(config):
         'obs_TotalResp':'mean',
         'obs_SoilTemp':'mean',
         'obs_WTD':'mean',
-        'obs_ALT':'mean'})
+        'obs_ALT':'max'})
     pd_obs_annual_mean = pd_obs_annual_mean.reset_index()
     pd_obs_annual_std = pd_obs_annual.groupby(['year','sim']).agg({
         'obs_TotalResp': std,
@@ -3090,7 +3789,7 @@ def process_ted_data(config):
             print('Healy observations annual std:', file=pf)
             print(pd_obs_annual_std, file=pf)
     # output files to csv for import by graphing functions
-    pd_obs = pd_obs.drop(columns=['time'])
+   # pd_obs = pd_obs.drop(columns=['time'])
     pd_obs = pd_obs.reset_index() 
     pd_obs.to_csv(obs_processed_file, index=False)
     pd_obs_monthly_mean.to_csv(obs_processed_file_monthly, index=False)
@@ -3125,11 +3824,14 @@ def schadel_plots_env(var, config, out_dir):
             print('summer data subset:', file=pf)
             print(da, file=pf)
     # aggregate sims (collapse models and sites into one value per model simulation)
-    da_monthly = da.groupby('time.month').mean('time')
+    da_monthly = da.resample(time='M').mean('time')
+    da_monthly = da_monthly.groupby('time.month').mean('time')
     if var == 'ALT':
-        da_monthly = da.groupby('time.month').max('time')
+        da_monthly = da.resample(time='M').max('time')
+        da_monthly = da_monthly.groupby('time.month').mean('time')
     if var == 'TotalResp':
-        da_monthly = da.groupby('time.month').sum('time')
+        da_monthly = ds.resample(time='M').sum('time')
+        da_monthly = da_monthly.groupby('time.month').mean('time')
     with open(Path(config['output_dir'] + '/combined/schadel_debug'+var+'.txt'), 'a') as pf:
         with pd.option_context('display.max_columns', 10):
             print('variable resampled to monthly timestep:', file=pf)
@@ -3194,6 +3896,11 @@ def schadel_plots_env(var, config, out_dir):
         obs_str = 'obs_ALT'
         ymax_str = 'obs_ALT + obs_ALT_std'
         ymin_str = 'obs_ALT - obs_ALT_std'
+        # remove ALT below 10m
+        pd_df_annual.loc[pd_df_annual['ALT'] < -10, 'ALT'] = np.nan
+        pd_df_annual = pd_df_annual.dropna()
+        pd_df_monthly.loc[pd_df_monthly['ALT'] < -10, 'ALT'] = np.nan
+        pd_df_monthly = pd_df_monthly.dropna()
     elif var == 'WTD':
         y_label = r'Water Table Depth (m)'
         obs_str = 'obs_WTD'
@@ -3212,7 +3919,7 @@ def schadel_plots_env(var, config, out_dir):
     pd_obs_monthly_otc = pd_obs_monthly[pd_obs_monthly['sim'] == 'otc']
     pd_obs_monthly_sf = pd_obs_monthly[pd_obs_monthly['sim'] == 'sf']
     # plot annual change
-    p1 = ggplot(pd_df_annual, aes(x='year', y=var, group='ID', color='model', linetype='sim')) + \
+    p1 = ggplot(pd_df_annual, aes(x='year', y=var, color='model', linetype='sim')) + \
         geom_line() + \
         geom_point(mapping=aes(x='year', y=obs_str), color='red', data=pd_obs_annual_sf, inherit_aes=False) + \
         geom_point(mapping=aes(x='year', y=obs_str), color='black', data=pd_obs_annual_control, inherit_aes=False) + \
@@ -3230,7 +3937,7 @@ def schadel_plots_env(var, config, out_dir):
             panel_background = element_blank()
         )
         #scale_x_datetime(breaks=date_breaks('5 years'), labels=date_format('%Y')) + \
-    p2 = ggplot(pd_df_monthly, aes(x='month', y=var, group='ID', color='model', linetype='sim')) + \
+    p2 = ggplot(pd_df_monthly, aes(x='month', y=var, color='model', linetype='sim')) + \
         geom_line() + \
         scale_x_continuous(breaks = np.arange(np.round(min(pd_df_monthly.month)), np.round(max(pd_df_monthly.month)), step = 2)) + \
         geom_point(data=pd_obs_monthly_sf, mapping=aes(x='month', y=obs_str), color='red', inherit_aes=False) + \
