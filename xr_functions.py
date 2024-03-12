@@ -1821,7 +1821,7 @@ def replace_clm_14site_climate(input_list):
     # open biascorrected climate dataset file
     with xr.open_dataset(bc_file, engine=config['nc_read']['engine'], decode_cf=True, use_cftime=True) as ds_tmp:
         ds = ds_tmp.load()
-    # count nana by data array
+    # count nan by data array
     fsds_nan = ds['FSDS'].isnull().sum() 
     flds_nan = ds['FLDS'].isnull().sum()
     pbot_nan = ds['PBOT'].isnull().sum()
@@ -1829,7 +1829,7 @@ def replace_clm_14site_climate(input_list):
     qbot_nan = ds['QBOT'].isnull().sum()
     prec_nan = ds['PRECIP'].isnull().sum()
     wind_nan = ds['WIND'].isnull().sum()
-    # create list of Precip/solar/TPQW files by year (1901-2021)
+    # create list of precip/solar/TPQW files by year (1901-2021)
     year_list = list(range(1901,2021+1,1))
     file_list = []
     for year in year_list:
