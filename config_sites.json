@@ -1,0 +1,18 @@
+{
+	"config_files": [
+		"/scratch/jw2636/wrpmip/python_codes/site_configs/usa_eightmilelake.json",
+		"/scratch/jw2636/wrpmip/python_codes/site_configs/usa_toolik.json",
+		"/scratch/jw2636/wrpmip/python_codes/site_configs/usa_utqiagvik.json",
+		"/scratch/jw2636/wrpmip/python_codes/site_configs/usa_atqasuk.json",
+		"/scratch/jw2636/wrpmip/python_codes/site_configs/can_daringlake.json",
+		"/scratch/jw2636/wrpmip/python_codes/site_configs/can_wanderingriver.json",
+		"/scratch/jw2636/wrpmip/python_codes/site_configs/can_cambridgebay.json",
+		"/scratch/jw2636/wrpmip/python_codes/site_configs/gre_disko.json",
+		"/scratch/jw2636/wrpmip/python_codes/site_configs/gre_zackenburg.json",
+		"/scratch/jw2636/wrpmip/python_codes/site_configs/nor_iskoras.json",
+		"/scratch/jw2636/wrpmip/python_codes/site_configs/rus_seida.json",
+		"/scratch/jw2636/wrpmip/python_codes/site_configs/sva_adventdalen.json",
+		"/scratch/jw2636/wrpmip/python_codes/site_configs/sva_endalen.json",
+		"/scratch/jw2636/wrpmip/python_codes/site_configs/swe_abisko.json"
+	]
+}
