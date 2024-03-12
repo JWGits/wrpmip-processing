@@ -20,52 +20,58 @@ def main():
             printfile.write(line + '\n')                
     # start dask cluster
     with client:
-        ## copy, subset, resample netcdfs from each directory
-        #L = [client.submit(xrfx.full_reanalysis_list, f) for f in config['config_files']]
+        # copy, subset, resample netcdfs from each directory
+        L = [client.submit(xrfx.full_reanalysis_list, f) for f in config['config_files']]
+        # flatten list of returned futures list to parallize subset call
+        full_list = []
+        for site in L:
+            for i in site.result():
+                full_list.append(i)
+        # subset all files across all of dasks resources
+        L2 = [client.submit(xrfx.subset_reanalysis, f) for f in full_list]
+        wait(L2)
+        # crujra raw data test
+        #La = [client.submit(xrfx.raw_dswrf_list, f) for f in config['config_files']]
         ## flatten list of returned futures list to parallize subset call
-        #full_list = []
-        #for site in L:
+        #raw_list = []
+        #for site in La:
         #    for i in site.result():
-        #        full_list.append(i)
+        #        raw_list.append(i)
         ## subset all files across all of dasks resources
-        #L2 = [client.submit(xrfx.subset_reanalysis, f) for f in full_list]
-        #wait(L2)
-        ## crujra raw data test
-        ##La = [client.submit(xrfx.raw_dswrf_list, f) for f in config['config_files']]
-        ### flatten list of returned futures list to parallize subset call
-        ##raw_list = []
-        ##for site in La:
-        ##    for i in site.result():
-        ##        raw_list.append(i)
-        ### subset all files across all of dasks resources
-        ##Lb = [client.submit(xrfx.subset_raw_reanalysis, f) for f in raw_list]
-        ##wait(Lb)
-        ##Lc = [client.submit(xrfx.concat_dswrf, f) for f in config['config_files']]
-        ##wait(Lc)
-        ## for each site, create list of files that will be concatenated based on datayeas
-        #L3 = [client.submit(xrfx.cru_sitesubset_list, f) for f in config['config_files']]
-        ## use futures list by site to concat files
-        #data_list = []
-        #for site in L3:
-        #    data_list.append(site.result())
-        #L4 = [client.submit(xrfx.concat_cru_sitesubset, f) for f in data_list]
-        #wait(L4)
+        #Lb = [client.submit(xrfx.subset_raw_reanalysis, f) for f in raw_list]
+        #wait(Lb)
+        #Lc = [client.submit(xrfx.concat_dswrf, f) for f in config['config_files']]
+        #wait(Lc)
+        # for each site, create list of files that will be concatenated based on datayeas
+        L3 = [client.submit(xrfx.cru_sitesubset_list, f) for f in config['config_files']]
+        # use futures list by site to concat files
+        data_list = []
+        for site in L3:
+            data_list.append(site.result())
+        L4 = [client.submit(xrfx.concat_cru_sitesubset, f) for f in data_list]
+        wait(L4)
         # combine observation data form csv files into netcdf for each site
         L5 = [client.submit(xrfx.combine_site_observations, f) for f in config['config_files']]
         wait(L5)
         # calculate the multiyear means of all climate forcing variables for each site
-        L6 = [client.submit(xrfx.multiyear_daily_means, f) for f in itertools.product(config['config_files'], ["CRUJRA","Obs"])]
+        L6 = [client.submit(xrfx.multiyear_means, f) for f in itertools.product(config['config_files'], ["CRUJRA","Obs"])]
         wait(L6)
         # calculate the bias between cru and obs for each site
-        L7 = [client.submit(xrfx.bias_calculation, f) for f in itertools.product(config['config_files'], ["ABias","MBias"])] 
+        L7 = [client.submit(xrfx.bias_calculation, f) for f in itertools.product(config['config_files'], ["ABias","MBias"], ['dw','w','m'])] 
         wait(L7)  
         # use calculated bias to correct entire crujra product for each site
-        L8 = [client.submit(xrfx.bias_correction, f) for f in itertools.product(config['config_files'], ["ABias","MBias"])] 
+        L8 = [client.submit(xrfx.bias_correction, f) for f in itertools.product(config['config_files'], ["ABias","MBias"], ['dw','w','m'])] 
         wait(L8)  
         # plot graphs for each site
-        L9 = [client.submit(xrfx.plot_site_graphs, f) for f in config['config_files']] 
+        L9 = [client.submit(xrfx.plot_site_graphs, f) for f in itertools.product(config['config_files'], ['dw','w','m'])] 
         wait(L9)  
-
+    # create combined netcdf file
+    nc_file_out = '/projects/warpmip/shared/forcing_data/biascorrected_forcing/WrPMIP_14site_clmcrujra_bc_1901-2021.nc'
+    xrfx.combine_corrected_climate([config['config_files'], nc_file_out])
+    # create clm site subset forcing files
+    config_clmsites = '/scratch/jw2636/wrpmip/python_codes/config_clmclimate2.json'
+    bc_climate_file = nc_file_out
+    xrfx.replace_clm_14site_climate([config_clmsites, bc_climate_file])
     # create pdf report        
     xrfx.climate_pdf_report(config['config_files']) 
 

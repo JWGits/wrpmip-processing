@@ -208,8 +208,6 @@ def xr_subset(raw_f, config):
     ds[config['var_sub']].to_netcdf(sub_file, mode="w", encoding=encoding, \
                                       format=config['nc_write']['format'],\
                                       engine=config['nc_write']['engine'])
-    # remove temp file after copying
-    rmv_file(tmp_file)
     # call xr_resample when subset complete
     xr_resample(raw_f, config)
 
@@ -598,9 +596,11 @@ def subset_reanalysis(f):
     # pull grid form config file
     grid = config['lndgrid'] - 1
     # subset to variables of interest and grid of interest for each site 
-    ds = ds[keep].sel(lndgrid=grid)
+    ds = ds[keep].isel(lndgrid=grid)
+    # add snow and rain to make total precip
+    ds['PRECIP'] = ds['RAIN'] + ds['SNOW']
     # shift the index by offset from GMT time at location 
-    ds.coords['time'] = ds.indexes['time'].round('H').shift(config['cru_GMT_adj'], 'H')
+    ds.coords['time'] = ds.indexes['time'].round('H') #.shift(config['cru_GMT_adj'], 'H')
     ## set encoding for netcdfs
     comp = dict(zlib=config['nc_write']['zlib'], shuffle=config['nc_write']['shuffle'],\
                 complevel=config['nc_write']['complevel'], _FillValue=None) #config['nc_write']['fillvalue'])
@@ -659,6 +659,13 @@ def concat_cru_sitesubset(f):
     # open netcdf file
     with xr.open_mfdataset(f[1], parallel=True, engine=config['nc_read']['engine'], decode_cf=True, use_cftime=True) as ds_tmp:
         ds = ds_tmp.load()
+    # Final QQ for clm created hourly cru data
+    ds['FSDS'] = ds['FSDS'].where(ds['FSDS'] > 0, 0.0)
+    ds['FLDS'] = ds['FLDS'].where(ds['FLDS'] > 0, 0.0)
+    ds['RAIN'] = ds['RAIN'].where(ds['RAIN'] > 0, 0.0)
+    ds['SNOW'] = ds['SNOW'].where(ds['SNOW'] > 0, 0.0)
+    ds['QBOT'] = ds['QBOT'].where(ds['QBOT'] > 0, 0.0)
+    ds['WIND'] = ds['WIND'].where(ds['WIND'] > 0, 0.0)
     ## set netcdf write characteristics for xarray.to_netcdf()
     comp = dict(zlib=config['nc_write']['zlib'], shuffle=config['nc_write']['shuffle'],\
                 complevel=config['nc_write']['complevel'],_FillValue=None) #config['nc_write']['fillvalue'])
@@ -701,23 +708,22 @@ def combine_site_observations(config_file):
         case 'USA-EightMileLake':
             # convert numerical timestamp to string for datetime.strptime
             obs_data['time'] = obs_data['TIMESTAMP_START'].astype(str)
+            # remove -9999 values, as numbers are float values have to use np.isclose
+            #num_cols = obs_data.select_dtypes(np.number).columns
+            #obs_data[num_cols] = obs_data[num_cols].mask(np.isclose(obs_data[num_cols].values, -9999))
             # change -9999 fill values to NAs
             obs_data = obs_data.replace(-9999, np.NaN)
             # convert TBOT from celsius to kelvin
             obs_data.loc[:,'TBOT'] = obs_data['TBOT'] + 273.15
-            # make all negaive values in solar radiation zero
-            obs_data.loc[obs_data['FSDS'] < 0.0, 'FSDS'] = 0.0
-            obs_data.loc[obs_data['FLDS'] < 0.0, 'FLDS'] = 0.0
             # Convert from kPa to Pa
             obs_data.loc[:,'PBOT'] = obs_data['PBOT'] * 1000
             # convert RH to SH
+            obs_data.loc[obs_data['RH'] < 0, 'RH'] = 0
+            obs_data.loc[obs_data['RH'] > 100, 'RH'] = 100
             obs_data.loc[:,'QBOT'] = specific_humidity(obs_data['RH'], obs_data['TBOT'], obs_data['PBOT'])
             obs_data = obs_data.drop(columns=['RH'])
-            # WS
-            # precip
             with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
                 print(obs_data, file=f)
-
         case 'USA-Toolik':
             # fix hourly timestep - cannot have 24 as hour value, only 0:23 for datetime.strptime
             obs_data.loc[:,'hour'] = obs_data['hour'] - 100
@@ -730,20 +736,18 @@ def combine_site_observations(config_file):
                     print(obs_data.dtypes, file=f)
             # convert TBOT from celsius to kelvin
             obs_data.loc[:,'TBOT'] = obs_data['TBOT'] + 273.15
-            # make all negaive values in solar radiation zero
-            obs_data.loc[obs_data['FSDS'] < 0.0, 'FSDS'] = 0.0
-            obs_data.loc[obs_data['FLDS'] < 0.0, 'FLDS'] = 0.0
             # change mbar -> Pa
             obs_data.loc[:,'PBOT'] = obs_data['PBOT'] * 100
             obs_data.loc[obs_data['PBOT'] < 90000, 'PBOT'] = np.NaN 
             # convert RH to SH
+            obs_data.loc[obs_data['RH'] < 0, 'RH'] = 0
+            obs_data.loc[obs_data['RH'] > 100, 'RH'] = 100
             obs_data['QBOT'] = specific_humidity(obs_data['RH'], obs_data['TBOT'], obs_data['PBOT']) 
             obs_data = obs_data.drop(columns=['RH'])
-            # WS
             # precip
+            obs_data['PRECIP'] = obs_data['PRECIP']/3600
             with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
                 print(obs_data, file=f)
-        
         case 'SWE-Abisko':
             # abiskos data is very messy and has all kinds of non-numeric character strings which confuses python
             # python then turns all columns into objects (strings) which breaks all the math code
@@ -753,22 +757,25 @@ def combine_site_observations(config_file):
                 obs_data.loc[:,col] = pd.to_numeric(obs_data[col], errors='coerce')
             # convert numerical timestamp to string for datetime.strptime
             obs_data['time'] = obs_data['Timestamp (UTC)'].astype(str)
+            # remove -9999 values, as numbers are float values have to use np.isclose
+            #num_cols = obs_data.select_dtypes(np.number).columns
+            #obs_data[num_cols] = obs_data[num_cols].mask(np.isclose(obs_data[num_cols].values, -6999))
             # change -6999 fill values to NAs
-            obs_data = obs_data.replace(-6999, np.NaN)
+            #obs_data = obs_data.replace(-6999, np.NaN)
             # convert TBOT from celsius to kelvin
             obs_data.loc[:,'TBOT'] = obs_data['TBOT'] + 273.15
-            # make all negaive values in solar radiation zero
-            obs_data.loc[obs_data['FSDS'] < 0.0, 'FSDS'] = 0.0
-            obs_data.loc[obs_data['FLDS'] < 0.0, 'FLDS'] = 0.0
+            # clean FLDS values
             obs_data.loc[obs_data['FLDS'] < 50,  'FLDS'] = np.NaN 
             # Convert from mbar to Pa
             obs_data.loc[:,'PBOT'] = obs_data['PBOT'] * 100
             obs_data.loc[obs_data['PBOT'] < 95000, 'PBOT'] = np.NaN 
             # convert RH to SH
+            obs_data.loc[obs_data['RH'] < 0, 'RH'] = 0
+            obs_data.loc[obs_data['RH'] > 100, 'RH'] = 100
             obs_data.loc[:,'QBOT'] = specific_humidity(obs_data['RH'], obs_data['TBOT'], obs_data['PBOT'])
             obs_data = obs_data.drop(columns=['RH'])
-            # WS
-            # precip:
+            # precip
+            obs_data['PRECIP'] = obs_data['PRECIP']/3600
             with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
                 print(obs_data, file=f)
         case 'RUS-Seida':
@@ -793,8 +800,8 @@ def combine_site_observations(config_file):
             obs_data.loc[:,'FSDS'] = (obs_data['PAR']/4.57)/0.46
             obs_data = obs_data.drop(columns = ['PAR'])
             # convert rh to sh
-            obs_data.loc[:,'QBOT'] = specific_humidity(obs_data['RH'], obs_data['TBOT'], obs_data['PBOT'])
-            obs_data = obs_data.drop(columns=['RH'])
+            #obs_data.loc[:,'QBOT'] = specific_humidity(obs_data['RH'], obs_data['TBOT'], obs_data['PBOT'])
+            obs_data = obs_data.drop(columns=['RH','WIND'])
             with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
                 print(obs_data, file=f)
             # pressure, windspeed seem to be in same units as clm reprocessed crujra
@@ -818,26 +825,25 @@ def combine_site_observations(config_file):
             obs_data = obs_data.drop(columns = ['Date'])
             # convert TBOT from celsius to kelvin
             obs_data.loc[:,'TBOT'] = obs_data['TBOT'] + 273.15
-            # make all negaive values in solar radiation zero
-            obs_data.loc[obs_data['FSDS'] < 0.0, 'FSDS'] = 0.0
             # No pressure given so I'll calculate air pressure given a rough reference (400m ~ 96357Pa) and plug in sites TBOT
             # into barometric pressure equation to estimate the pressure a few meters up at site elevation (424m)
             # basically adding temperature variability to reference pressure through barometric pressure function
             # I'm only doing this because I need pressure to convert RH to SH
-            g0 = 9.80665 # gavitational constat in m/s2
-            M0 = 0.0289644 # molar mass of air kg/mol
-            R0 = 8.3144598 # universal gas constant - J/(mol K)
-            hb = 0 # reference level, here just below sites elevation
-            Pb = 101325 # estimated reference pressure at 400 meters and 0 degre C 
-            obs_data.loc[:,'PBOT'] = Pb*np.exp((-g0*M0*(424-hb))/(R0*obs_data['TBOT']))
-            obs_data.loc[obs_data['PBOT'] < 90000, 'PBOT'] = np.NaN 
+            #g0 = 9.80665 # gavitational constat in m/s2
+            #M0 = 0.0289644 # molar mass of air kg/mol
+            #R0 = 8.3144598 # universal gas constant - J/(mol K)
+            #hb = 0 # reference level, here just below sites elevation
+            #Pb = 101325 # estimated reference pressure at 400 meters and 0 degre C 
+            #obs_data.loc[:,'PBOT'] = Pb*np.exp((-g0*M0*(424-hb))/(R0*obs_data['TBOT']))
+            #obs_data.loc[obs_data['PBOT'] < 90000, 'PBOT'] = np.NaN 
             # convert RH to SH
-            obs_data.loc[:,'QBOT'] = specific_humidity(obs_data['RH'], obs_data['TBOT'], obs_data['PBOT'])
-            obs_data = obs_data.drop(columns=['RH'])
+            #obs_data.loc[:,'QBOT'] = specific_humidity(obs_data['RH'], obs_data['TBOT'], obs_data['PBOT'])
+            # precip
+            #obs_data['PRECIP'] = obs_data['PRECIP']/3600
+            # remove uneeded columns
+            obs_data = obs_data.drop(columns=['RH','PRECIP'])
             with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
                 print(obs_data, file=f)
-            # WS
-            # precip
         case 'USA-Utqiagvik':
             # subset to BD for Barrow in strSitCom
             obs_data = obs_data.loc[obs_data['SITE'] == 'BD']
@@ -861,15 +867,19 @@ def combine_site_observations(config_file):
             obs_data = obs_data.drop(columns = ['SITE'])
             # set time from timestamp
             obs_data['time'] = obs_data['strAlaska'].astype(str)
-            # change all -999.9 values to NaN
-            obs_data = obs_data.replace(-999.9, np.NaN)
+            # remove -9999 values, as numbers are float values have to use np.isclose
+            num_cols = obs_data.select_dtypes(np.number).columns
+            obs_data[num_cols] = obs_data[num_cols].mask(np.isclose(obs_data[num_cols].values, -999.9))
+            # remove zero wind speeds, select 2014 forward
+            obs_data.loc[obs_data['WIND'] <= 0, 'WIND'] = np.nan
+            obs_data.loc[obs_data.time < '2014-01-01', 'WIND'] = np.nan
             # scale celsius to kelvin
             obs_data.loc[:,'TBOT'] = obs_data['TBOT'] + 273.15
-            # calculate SWIN from PAR
-            obs_data.loc[:,'FSDS'] = obs_data['PAR']/2.1#4.57)/0.46
-            obs_data = obs_data.drop(columns = ['PAR'])
-            #WS
             # precip
+            obs_data['PRECIP'] = obs_data['PRECIP']/3600
+            # calculate SWIN from PAR
+            #obs_data.loc[:,'FSDS'] = obs_data['PAR']/2.1#4.57)/0.46
+            obs_data = obs_data.drop(columns = ['PAR','PRECIP'])
             with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
                 print(obs_data, file=f)
         case 'USA-Atqasuk':
@@ -895,15 +905,20 @@ def combine_site_observations(config_file):
             obs_data = obs_data.drop(columns = ['SITE'])
             # set time from timestamp
             obs_data['time'] = obs_data['strAlaska'].astype(str)
-            # change all -999.9 values to NaN
-            obs_data = obs_data.replace(-999.9, np.NaN)
+            # remove -9999 values, as numbers are float values have to use np.isclose
+            num_cols = obs_data.select_dtypes(np.number).columns
+            obs_data[num_cols] = obs_data[num_cols].mask(np.isclose(obs_data[num_cols].values, -999.9))
+            # remove zero wind speeds
+            obs_data.loc[obs_data['WIND'] <= 0.0, 'WIND'] = np.nan
+            obs_data.loc[obs_data.time < '2014-01-01', 'WIND'] = np.nan
+            obs_data.loc[obs_data.time > '2016-01-01', 'WIND'] = np.nan
             # scale celsius to kelvin
             obs_data.loc[:,'TBOT'] = obs_data['TBOT'] + 273.15
-            # calculate SWIN from PAR
-            obs_data.loc[:,'FSDS'] = obs_data['PAR']/2.1#4.57)/0.46
-            obs_data = obs_data.drop(columns = ['PAR'])
-            #WS
             # precip
+            obs_data['PRECIP'] = obs_data['PRECIP']/3600
+            # calculate SWIN from PAR
+            #obs_data.loc[:,'FSDS'] = obs_data['PAR']/2.1#4.57)/0.46
+            obs_data = obs_data.drop(columns = ['PAR','PRECIP','WIND'])
             with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
                 print(obs_data, file=f)
         case 'CAN-CambridgeBay':
@@ -930,9 +945,14 @@ def combine_site_observations(config_file):
             obs_data['PBOT'] = obs_data['PBOT']*1000
             # wind from km/h to m/s
             obs_data['WIND'] = (obs_data['WIND']/3600)*1000
+            obs_data.loc[obs_data['WIND'] <= 0, 'WIND'] = np.nan
             # calculate SH from RH/TBOT/PBOT
+            obs_data.loc[obs_data['RH'] < 0, 'RH'] = 0
+            obs_data.loc[obs_data['RH'] > 100, 'RH'] = 100
             obs_data.loc[:,'QBOT'] = specific_humidity(obs_data['RH'], obs_data['TBOT'], obs_data['PBOT'])
-            obs_data = obs_data.drop(columns=['RH','PRECIP'])
+            obs_data = obs_data.drop(columns=['RH'])
+            # precip
+            obs_data['PRECIP'] = obs_data['PRECIP']/3600
             with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
                 print(obs_data, file=f)
         case 'SVA-Adventdalen':
@@ -1028,9 +1048,15 @@ def combine_site_observations(config_file):
             # scale mbar to kpa
             obs_data['PBOT'] = obs_data['PBOT']*100
             # calculate SH from RH/TBOT/PBOT
+            obs_data.loc[obs_data['RH'] < 0, 'RH'] = 0
+            obs_data.loc[obs_data['RH'] > 100, 'RH'] = 100
             obs_data.loc[:,'QBOT'] = specific_humidity(obs_data['RH'], obs_data['TBOT'], obs_data['PBOT'])
+            # remove zero wind speeds
+            obs_data.loc[obs_data['WIND'] <= 0, 'WIND'] = np.nan
+            # precip
+            obs_data['PRECIP'] = obs_data['PRECIP']/3600
             # remove uneeded columns
-            obs_data = obs_data.drop(columns=['RH','PRECIP'])
+            obs_data = obs_data.drop(columns=['RH'])
             with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
                 print('data adjusted', file=f)
                 print(obs_data, file=f)
@@ -1102,9 +1128,18 @@ def combine_site_observations(config_file):
             # scale mbar to kpa
             obs_data['PBOT'] = obs_data['PBOT']*100
             # calculate SH from RH/TBOT/PBOT
+            obs_data.loc[obs_data['RH'] < 0, 'RH'] = 0
+            obs_data.loc[obs_data['RH'] > 100, 'RH'] = 100
             obs_data.loc[:,'QBOT'] = specific_humidity(obs_data['RH'], obs_data['TBOT'], obs_data['PBOT'])
+            # remove zero wind speeds
+            obs_data.loc[obs_data['WIND'] <= 0, 'WIND'] = np.nan
+            # precip
+            obs_data['PRECIP'] = obs_data['PRECIP']/3600
             # remove uneeded columns
-            obs_data = obs_data.drop(columns=['RH','PRECIP'])
+            obs_data = obs_data.drop(columns=['RH'])
+            # replace odd data on first rows of observation data with nan
+            obs_data.loc[obs_data['FLDS'] < 100, 'FLDS'] = np.nan
+            obs_data.loc[obs_data['FLDS'] > 400, 'FLDS'] = np.nan
             with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
                 print('data adjusted', file=f)
                 print(obs_data, file=f)
@@ -1176,7 +1211,7 @@ def combine_site_observations(config_file):
             # remove rows with no date/time of measurement
             f7 = f7.dropna(subset=config['obs']['f7']['datetime_cols'])
             # subset each file by quality flag
-            quality_flags = ['good']
+            quality_flags = ['good','suspect','missing','unknown']
             obs_data = obs_data[obs_data['Quality Flag'].isin(quality_flags)]
             f2 = f2[f2['Quality Flag'].isin(quality_flags)]
             f3 = f3[f3['Quality Flag'].isin(quality_flags)]
@@ -1209,14 +1244,27 @@ def combine_site_observations(config_file):
             obs_data = pd.merge(obs_data, f7, on='time', how='outer')
             # sort dates after merge to restore timeseries order
             obs_data = obs_data.sort_values(by='time')
+            # use loc to replace all -9999 values
+            obs_data.loc[obs_data['TBOT'] < -900.0, 'TBOT'] = np.nan
+            obs_data.loc[obs_data['PBOT'] < -900.0, 'PBOT'] = np.nan
+            obs_data.loc[obs_data['FSDS'] < -900.0, 'FSDS'] = np.nan
+            obs_data.loc[obs_data['FLDS'] < -900.0, 'FLDS'] = np.nan
+            obs_data.loc[obs_data['RH'] < -900, 'RH'] = np.nan
             # scale celsius to kelvin
             obs_data['TBOT'] = obs_data['TBOT'] + 273.15
             # scale mbar to kpa
             obs_data['PBOT'] = obs_data['PBOT']*100
             # calculate SH from RH/TBOT/PBOT
+            obs_data.loc[obs_data['RH'] < 0, 'RH'] = 0
+            obs_data.loc[obs_data['RH'] > 100, 'RH'] = 100
             obs_data.loc[:,'QBOT'] = specific_humidity(obs_data['RH'], obs_data['TBOT'], obs_data['PBOT'])
+            # remove zero wind speeds
+            obs_data.loc[obs_data['WIND'] <= 0, 'WIND'] = np.nan
+            # precip, less than zero remove and scale to rate per second
+            obs_data.loc[obs_data['PRECIP'] < 0, 'PRECIP'] = np.nan
+            obs_data['PRECIP'] = obs_data['PRECIP']/3600
             # remove uneeded columns
-            obs_data = obs_data.drop(columns=['RH','PRECIP'])
+            obs_data = obs_data.drop(columns=['RH'])
             with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
                 print('data adjusted', file=f)
                 print(obs_data, file=f)
@@ -1290,7 +1338,7 @@ def combine_site_observations(config_file):
             # remove rows with no date/time of measurement
             f7 = f7.dropna(subset=config['obs']['f7']['datetime_cols'])
             # subset each file by quality flag
-            quality_flags = ['good']
+            quality_flags = ['good','suspect','missing','unknown']
             obs_data = obs_data[obs_data['quality flag'].isin(quality_flags)]
             f2 = f2[f2['quality flag'].isin(quality_flags)]
             f3 = f3[f3['quality flag'].isin(quality_flags)]
@@ -1323,20 +1371,54 @@ def combine_site_observations(config_file):
             obs_data = pd.merge(obs_data, f7, on='time', how='outer')
             # sort dates after merge to restore timeseries order
             obs_data = obs_data.sort_values(by='time')
+            # use loc to replace all -9999 values
+            obs_data.loc[obs_data['TBOT'] < -900, 'TBOT'] = np.nan
+            obs_data.loc[obs_data['PBOT'] < -900, 'PBOT'] = np.nan
+            obs_data.loc[obs_data['FSDS'] < -900, 'FSDS'] = np.nan
+            obs_data.loc[obs_data['FLDS'] < -900, 'FLDS'] = np.nan
+            obs_data.loc[obs_data['RH'] < -900, 'RH'] = np.nan
             # scale celsius to kelvin
             obs_data['TBOT'] = obs_data['TBOT'] + 273.15
             # scale mbar to kpa
             obs_data['PBOT'] = obs_data['PBOT']*100
             # calculate SH from RH/TBOT/PBOT
+            obs_data.loc[obs_data['RH'] < 0, 'RH'] = 0
+            obs_data.loc[obs_data['RH'] > 100, 'RH'] = 100
             obs_data.loc[:,'QBOT'] = specific_humidity(obs_data['RH'], obs_data['TBOT'], obs_data['PBOT'])
+            # remove zero wind speeds
+            obs_data.loc[obs_data['WIND'] <= 0, 'WIND'] = np.nan
+            # precip, less than zero remove and scale to rate per second
+            obs_data.loc[obs_data['PRECIP'] < 0, 'PRECIP'] = np.nan
+            obs_data['PRECIP'] = obs_data['PRECIP']/3600
             # remove uneeded columns
-            obs_data = obs_data.drop(columns=['RH','PRECIP'])
+            obs_data = obs_data.drop(columns=['RH'])
             with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
                 print('data adjusted', file=f)
                 print(obs_data, file=f)
                 print(obs_data.head(), file=f)
                 print(obs_data.dtypes, file=f)
     try:        
+        # make final QQ adjustments
+        try:
+            obs_data.loc[obs_data['FSDS'] < 0, 'FSDS'] = 0
+        except:
+            pass
+        try:
+            obs_data.loc[obs_data['FLDS'] < 0, 'FLDS'] = 0
+        except:
+            pass
+        try:
+            obs_data.loc[obs_data['WIND'] < 0, 'WIND'] = 0
+        except:
+            pass
+        try:
+            obs_data.loc[obs_data['PRECIP'] < 0, 'PRECIP'] = 0
+        except:
+            pass
+        try:
+            obs_data.loc[obs_data['QBOT'] < 0, 'QBOT'] = 0
+        except:
+            pass
         # drop old date/time columns
         obs_data = obs_data.drop(columns=config['obs']['f1']['datetime_cols'], errors='ignore')    
         with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
@@ -1375,6 +1457,7 @@ def combine_site_observations(config_file):
         ds.coords['time'] = ds.indexes['time'].shift(config['obs_GMT_adj'], 'H')
         with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
             print('past9', file=f)
+            print(ds, file=f)
         ## set netcdf write characteristics for xarray.to_netcdf()
         comp = dict(zlib=config['nc_write']['zlib'], shuffle=config['nc_write']['shuffle'],\
                     complevel=config['nc_write']['complevel'],_FillValue=None) #config['nc_write']['fillvalue'])
@@ -1406,7 +1489,7 @@ def map_groups(time, avg_win, sub_win, config):
         if sub_win == 'hour':
             sw = time.hour
             idx_str = 'W'+str(aw).zfill(3)+'S'+str(sw).zfill(3)
-        elif sub_win == None:
+        elif sub_win == '':
             idx_str = 'W'+str(aw).zfill(3)
         return idx_str
     # start blank list for dictionary pairs
@@ -1425,7 +1508,8 @@ def map_groups(time, avg_win, sub_win, config):
                         for hour in range(0,24):
                             avg_sub_idx.append('W'+str(weekofyear).zfill(3)+'S'+str(hour).zfill(3))
                 case '':
-                    pass
+                    for weekofyear in range(1,53):
+                        avg_sub_idx.append('W'+str(weekofyear).zfill(3))
         case 'month':
             match sub_win:
                 case 'hour':
@@ -1434,7 +1518,8 @@ def map_groups(time, avg_win, sub_win, config):
                         for hour in range(0,24):
                             avg_sub_idx.append('W'+str(month).zfill(3)+'S'+str(hour).zfill(3))
                 case '':
-                    pass
+                    for month in range(1,13):
+                        avg_sub_idx.append('W'+str(month).zfill(3))
     # zip/map a list of integers to list of strings that represent
     mapped_dict = dict(zip(avg_sub_idx, range(1, len(avg_sub_idx)+1)))
     # apply dictionary to datasets input time (as data array
@@ -1442,29 +1527,52 @@ def map_groups(time, avg_win, sub_win, config):
     return new_groups
 
 # convert simulation and obvervation netcdf to multi-year daily means    
-def multiyear_daily_means(f_iter):
+def multiyear_means(f_iter):
     # take values from zip for config and nc_type(i.e. CRUJRA vs Obs)
     config = read_config(f_iter[0])
     nc_type = f_iter[1] 
     # create input file name
     nc_file = Path(config['site_dir'] + nc_type + "_" + config['site_name'] + "_dat.nc")
     # create file output name
-    nc_out = Path(config['site_dir'] + nc_type + "_" + config['site_name'] + "_mym.nc")
+    nc_out_dw = Path(config['site_dir'] + nc_type + "_" + config['site_name'] + "_dw_mym.nc")
+    nc_out_w  = Path(config['site_dir'] + nc_type + "_" + config['site_name'] + "_w_mym.nc")
+    nc_out_m  = Path(config['site_dir'] + nc_type + "_" + config['site_name'] + "_m_mym.nc")
     # open netcdf file using context manager and xarray
-    with xr.open_dataset(nc_file, engine=config['nc_read']['engine'], decode_cf=True, use_cftime=True) as ds_tmp:
-        ds = ds_tmp.load()
+    try:
+        with xr.open_dataset(nc_file, engine=config['nc_read']['engine'], decode_cf=True, use_cftime=True) as ds_tmp:
+            ds = ds_tmp.load()
+    except:
+        # if no obs data repeat procedure on cru data; allows rest of code to execute and bias=0 so no correction (crujra from cell is maintained) 
+        nc_file = Path(config['site_dir'] + "CRUJRA_" + config['site_name'] + "_dat.nc")
+        with xr.open_dataset(nc_file, engine=config['nc_read']['engine'], decode_cf=True, use_cftime=True) as ds_tmp:
+            ds = ds_tmp.load()
+        pass
+        #return
+    # remove zero precipitation events for average rate of rainfall when it occurs
+    #if 'PRECIP' in list(ds.data_vars):
+    #    ds['PRECIP'].loc[ds['PRECIP'] <= 0] = np.nan
     # create user defined groupby values to do non-standard time averages
     # new grouping coordinate must be integer data type and added to time dimenion
-    ds = ds.assign_coords(groupvar = ('time', map_groups(ds.indexes['time'], 'weekofyear', 'hour', config)))
+    ds_dw = ds.assign_coords(groupvar = ('time', map_groups(ds.indexes['time'], 'weekofyear', 'hour', config)))
+    ds_w  = ds.assign_coords(groupvar = ('time', map_groups(ds.indexes['time'], 'weekofyear', '', config)))
+    ds_m  = ds.assign_coords(groupvar = ('time', map_groups(ds.indexes['time'], 'month', '', config)))
     # groupby new coordinate
-    ds = ds.groupby('groupvar').mean() 
+    ds_dw = ds_dw.groupby('groupvar').mean() 
+    ds_w = ds_w.groupby('groupvar').mean() 
+    ds_m = ds_m.groupby('groupvar').mean() 
     ## set netcdf write characteristics for xarray.to_netcdf()
     comp = dict(zlib=config['nc_write']['zlib'], shuffle=config['nc_write']['shuffle'],\
                 complevel=config['nc_write']['complevel'],_FillValue=None) #config['nc_write']['fillvalue'])
     # create encoding
     encoding = {var: comp for var in ds.data_vars}
     # save file
-    ds.to_netcdf(nc_out, mode="w", \
+    ds_dw.to_netcdf(nc_out_dw, mode="w", \
+                format=config['nc_write']['format'], \
+                engine=config['nc_write']['engine'])
+    ds_w.to_netcdf(nc_out_w, mode="w", \
+                format=config['nc_write']['format'], \
+                engine=config['nc_write']['engine'])
+    ds_m.to_netcdf(nc_out_m, mode="w", \
                 format=config['nc_write']['format'], \
                 engine=config['nc_write']['engine'])
 
@@ -1473,18 +1581,25 @@ def bias_calculation(f_iter):
     # read in config
     config = read_config(f_iter[0])
     bias_type = f_iter[1]
+    time_avg = f_iter[2]
+    with open(Path(config['site_dir'] + time_avg + '_debug.txt'), 'w') as f:
+        print('bias calculation started', file=f)
     # create file names for CRUJRA and obs mydm
-    f_cru = Path(config['site_dir'] + "CRUJRA" + "_" + config['site_name'] + "_mym.nc")
-    f_obs = Path(config['site_dir'] + "Obs" + "_" + config['site_name'] + "_mym.nc")
-    bias_file = Path(config['site_dir'] + bias_type + "_" + config['site_name'] + "_mym.nc")
+    f_cru = Path(config['site_dir'] + "CRUJRA" + "_" + config['site_name'] + "_" +  time_avg + "_mym.nc")
+    f_obs = Path(config['site_dir'] + "Obs" + "_" + config['site_name'] + "_" +  time_avg + "_mym.nc")
+    bias_file = Path(config['site_dir'] + bias_type + "_" + config['site_name'] + "_" +  time_avg + "_mym.nc")
     # read cru
     with xr.open_dataset(f_cru, engine=config['nc_read']['engine'], decode_cf=True, use_cftime=True) as ds_tmp:
         ds_cru = ds_tmp.load()
     # read obs
-    with xr.open_dataset(f_obs, engine=config['nc_read']['engine'], decode_cf=True, use_cftime=True) as ds_tmp:
-        ds_obs = ds_tmp.load()
+    try:
+        with xr.open_dataset(f_obs, engine=config['nc_read']['engine'], decode_cf=True, use_cftime=True) as ds_tmp:
+            ds_obs = ds_tmp.load()
+    except:
+        ds_obs = ds_cru.copy(deep=True)
+        pass
     # list of vlimate variables to attempt to adjust
-    keep = ['FSDS','FLDS','PBOT','RAIN','SNOW','QBOT','TBOT','WIND']
+    keep = ['FSDS','FLDS','PBOT','PRECIP','RAIN','SNOW','QBOT','TBOT','WIND']
     # deep copy the cru data to replace with nans and fill with bias calculations
     bc = ds_cru.copy(deep=True)
     # calculate biases for each climate variable in keep
@@ -1506,9 +1621,11 @@ def bias_calculation(f_iter):
                 else:
                     bc[var] = ds_obs[var] / ds_cru[var]
             # fill gaps in bias if data is 75% complete or greater
-            if bc[var].isnull().sum() < 0.05*len(bc[var]):
+            if bc[var].isnull().sum() < 0.1*len(bc[var]):
                 bc[var] = bc[var].interpolate_na(dim='groupvar', method='nearest')
-        except Exception:
+        except Exception as error:
+            with open(Path(config['site_dir'] + time_avg + '_debug.txt'), 'a') as f:
+                print(error, file=f)
             pass
     # set netcdf write characteristics for xarray.to_netcdf()
     comp = dict(zlib=config['nc_write']['zlib'], shuffle=config['nc_write']['shuffle'],\
@@ -1525,22 +1642,34 @@ def bias_correction(f_iter):
     # read in config
     config = read_config(f_iter[0])
     bias_type = f_iter[1]
+    time_avg = f_iter[2]
+    with open(Path(config['site_dir'] + time_avg + '_debug.txt'), 'w') as f:
+        print('bias correction started', file=f)
     # create file name for fully adjusted dataset
     cru_file = Path(config['site_dir'] + "CRUJRA_" + config['site_name'] + "_allyears.nc")
-    cru_bc_file = Path(config['site_dir'] + bias_type + "_" + config['site_name'] + "_allyears.nc")
-    bias_file = Path(config['site_dir'] + bias_type + "_" + config['site_name'] + "_mym.nc")
-    # read in bias file
+    cru_bc_file = Path(config['site_dir'] + bias_type + "_" + config['site_name'] + "_" +  time_avg + "_allyears.nc")
+    bias_file = Path(config['site_dir'] + bias_type + "_" + config['site_name'] + "_" +  time_avg + "_mym.nc")
+    # read in bias file, otherwise skip and output unadjusted cru product file
     with xr.open_dataset(bias_file, engine=config['nc_read']['engine'], decode_cf=True, use_cftime=True) as ds_tmp:
         ds_bias = ds_tmp.load()
     # read in concatenated CRUJRA site file
     with xr.open_dataset(cru_file, engine=config['nc_read']['engine'], decode_cf=True, use_cftime=True) as ds_tmp:
         ds_cru = ds_tmp.load()
     # list of vlimate variables to attempt to adjust
-    keep = ['FSDS','FLDS','PBOT','RAIN','SNOW','QBOT','TBOT','WIND']
+    keep = ['FSDS','FLDS','PBOT','PRECIP','RAIN','SNOW','QBOT','TBOT','WIND']
     ds_cru = ds_cru[keep]
     # create user defined groupby values to do non-standard time averages
     # new grouping coordinate must be integer data type and added to time dimenion
-    ds_cru = ds_cru.assign_coords(groupvar = ('time', map_groups(ds_cru.indexes['time'], 'weekofyear', 'hour', config)))
+    if time_avg == 'dw':
+        main_window = 'weekofyear'
+        sub_window = 'hour'
+    elif time_avg == 'w':
+        main_window = 'weekofyear'
+        sub_window = ''
+    elif time_avg == 'm':
+        main_window = 'month'
+        sub_window = ''
+    ds_cru = ds_cru.assign_coords(groupvar = ('time', map_groups(ds_cru.indexes['time'], main_window, sub_window, config)))
     # adjust cru using groupby and daily multi-index to replace each variable data
     for var in keep:
         try:
@@ -1556,9 +1685,26 @@ def bias_correction(f_iter):
                 ds_cru[var] = ds_cru[var].groupby('groupvar') * ds_bias[var]
                 ds_cru[var] = (ds_cru[var] / 1000.0)
         except Exception as error:
-            with open(Path(config['site_dir'] + bias_type + '_debug.txt'), 'a') as f:
+            with open(Path(config['site_dir'] + time_avg + '_debug.txt'), 'a') as f:
                 print(error, file=f)
             pass
+    # final QQ for correct files
+    try:
+        ds_cru['FSDS'] = ds_cru['FSDS'].where(ds_cru['FSDS'] > 0, 0)
+    except:
+        pass
+    try:
+        ds_cru['PRECIP'] = ds_cru['PRECIP'].where(ds_cru['PRECIP'] > 0, 0)
+    except:
+        pass
+    try:
+        ds_cru['WIND'] = ds_cru['WIND'].where(ds_cru['WIND'] > 0, 0)
+    except:
+        pass
+    try:
+        ds_cru['QBOT'] = ds_cru['QBOT'].where(ds_cru['QBOT'] > 0, 0.000001)
+    except:
+        pass
     ## set netcdf write characteristics for xarray.to_netcdf()
     comp = dict(zlib=config['nc_write']['zlib'], shuffle=config['nc_write']['shuffle'],\
                 complevel=config['nc_write']['complevel'],_FillValue=None) #config['nc_write']['fillvalue'])
@@ -1569,25 +1715,311 @@ def bias_correction(f_iter):
                     format=config['nc_write']['format'],\
                     engine=config['nc_write']['engine'])   
 
+# function to take correct mbc files and combine them together
+def combine_corrected_climate(input_list):
+    # read in config file with list of site folder
+    config_files = input_list[0]
+    nc_out = Path(input_list[1]) 
+    # collect file names from each for for Mbias crujra files
+    file_list = []
+    for site in config_files:
+        site_config = read_config(site)
+        site_file = Path(site_config['site_dir'] + '/MBias_' + site_config['site_name'] + '_dw_allyears.nc')
+        file_list.append([site_config['site_name'], site_config, site_file])  
+    # loop through files appending the site dimension
+    ds_list = []
+    iterator = 1    
+    for file_name in file_list:
+        # extract site info list
+        site_name = file_name[0]
+        site_config = file_name[1]
+        site_ncfile = file_name[2]
+        # open site file
+        with xr.open_dataset(site_ncfile, engine=site_config['nc_read']['engine'], decode_cf=True, use_cftime=True) as ds_tmp:
+            ds = ds_tmp.load()
+        # remove RAIN and SNOW
+        ds = ds.drop_vars(['RAIN','SNOW'])
+        # assign simulation coordinate
+        ds = ds.assign_coords({'site': iterator})
+        ds = ds.assign({'site_name': site_name})
+        ds = ds.assign({'lon': site_config['lon']})
+        ds = ds.assign({'lat': site_config['lat']})
+        ds = ds.expand_dims('site')
+        # append dataset to list for later merging
+        ds_list.append(ds)
+        iterator += 1
+    # merge dataset
+    ds_sites = xr.merge(ds_list)
+    # set netcdf write characteristics for xarray.to_netcdf()
+    config = read_config(config_files[0])
+    #comp = dict(zlib=config['nc_write']['zlib'], shuffle=config['nc_write']['shuffle'],\
+    #            complevel=config['nc_write']['complevel'],_FillValue=None) #config['nc_write']['fillvalue'])
+    ## create encoding
+    #encoding = {var: comp for var in ds_sites.data_vars}
+    # add long name and units to all data variables
+    ds_sites['FSDS'] = ds_sites['FSDS'].assign_attrs(
+        units='W/m2', description='Downwelling shortwave radiation')
+    ds_sites['FLDS'] = ds_sites['FLDS'].assign_attrs(
+        units='W/m2', description='Downwelling longwave radiation')
+    ds_sites['WIND'] = ds_sites['WIND'].assign_attrs(
+        units='m/s', description='Wind speed')
+    ds_sites['TBOT'] = ds_sites['TBOT'].assign_attrs(
+        units='K', description='Air temperature')
+    ds_sites['PBOT'] = ds_sites['PBOT'].assign_attrs(
+        units='Pa', description='Air pressure')
+    ds_sites['QBOT'] = ds_sites['QBOT'].assign_attrs(
+        units='kg/kg', description='Specific humidity')
+    ds_sites['PRECIP'] = ds_sites['PRECIP'].assign_attrs(
+        units='mm/s', description='Total precipitation rate (before rain/snow separation)')
+    ds_sites['site_name'] = ds_sites['site_name'].assign_attrs(
+        description='Abbreviated country and full site name')
+    ds_sites['lon'] = ds_sites['lon'].assign_attrs(
+        units = 'degrees east',
+        description='longitude; [-180 180] centered on prime meridian')
+    ds_sites['lat'] = ds_sites['lat'].assign_attrs(
+        units = 'degrees north',
+        description='latitude; [-90 90] centered on equator')
+    # drop groupvar
+    ds_sites = ds_sites.drop_vars('groupvar')
+    # select timeframe
+    start_time = '1901-01-01 00:00:00'
+    end_time = '2021-12-31 23:00:00'
+    ds_sites = ds_sites.sel(time=slice(start_time, end_time))
+    # delete previous attributes
+    global_attrs = list(ds_sites.attrs)
+    with open(Path('/projects/warpmip/shared/forcing_data/biascorrected_forcing/nc_debug.txt'), 'w') as f:
+        print(global_attrs, file=f)
+    for item in global_attrs:
+        del ds_sites.attrs[item]
+    with open(Path('/projects/warpmip/shared/forcing_data/biascorrected_forcing/nc_debug.txt'), 'a') as f:
+        for varname, da in ds_sites.data_vars.items():
+            print(da.attrs, file=f)
+    # change global file attributes
+    ds_sites.attrs.update(
+        creator='Jon M Wells',
+        project='The Warming Permafrost Model Intercomparion Project (WrPMIP)',
+        updated=pd.Timestamp.now(tz='MST').strftime('%c'),
+        timestep='1-hourly data interpolated from 6H CRUJRAv2.3 product using CLM5',
+        method='1-hourly CRUJRAv2.3 (1901-2021) biascorrected by diurnal weekly multi-year means',
+        sites='14 sites as focus of WrPMIP site-level simulation experiments'
+    )
+    # print file output for debug
+    with option_context('display.max_rows', 10, 'display.max_columns', 10):
+        with open(Path('/projects/warpmip/shared/forcing_data/biascorrected_forcing/nc_debug.txt'), 'a') as f:
+            print(ds_sites, file=f)
+    # save file
+    ds_sites.to_netcdf(nc_out, mode="w", \
+                format=config['nc_write']['format'], \
+                engine=config['nc_write']['engine'])
+
+# function to ingest CLM5 formatted 14-site climate files and replace data with biascorrected forcing
+def replace_clm_14site_climate(input_list):
+    # read in config_clmsites
+    config = read_config(input_list[0])
+    # read in bc file location
+    bc_file = Path(input_list[1]) 
+    # open biascorrected climate dataset file
+    with xr.open_dataset(bc_file, engine=config['nc_read']['engine'], decode_cf=True, use_cftime=True) as ds_tmp:
+        ds = ds_tmp.load()
+    # count nana by data array
+    fsds_nan = ds['FSDS'].isnull().sum() 
+    flds_nan = ds['FLDS'].isnull().sum()
+    pbot_nan = ds['PBOT'].isnull().sum()
+    tbot_nan = ds['TBOT'].isnull().sum()
+    qbot_nan = ds['QBOT'].isnull().sum()
+    prec_nan = ds['PRECIP'].isnull().sum()
+    wind_nan = ds['WIND'].isnull().sum()
+    # create lids['FSDS'].isnull()    flds_nan = sts of Precip/solar/TPQW files by year (1901-2021)
+    year_list = list(range(1901,2021+1,1))
+    file_list = []
+    for year in year_list:
+        files = glob.glob("{nc_path}/*{nc_year}.nc".format(nc_path=config['file_dir'], nc_year=year)) 
+        prec_file = [f for f in files if 'Prec' in f]
+        solr_file = [f for f in files if 'Solr' in f]
+        tpqw_file = [f for f in files if 'TPQWL' in f]
+        file_list.append([year, prec_file[0], solr_file[0], tpqw_file[0]])
+    # remove previous copy of crujra folder
+    rmv_dir(config['new_dir'])
+    # remake directory for subset files, grant permission
+    Path(config['new_dir']).mkdir(parents=True, exist_ok=True)
+    # reset debug print statement before loop
+    with open(Path(config['new_dir']+'/siteclimate_debug.txt'), 'w') as f:
+        print('Starting data replacement loop:\n', file=f)
+    # loop through 1901-2021 file groups
+    for file_group in file_list:
+        # open annual files for precip/solar/tpqwl file for that year
+        with open(Path(config['new_dir']+'/siteclimate_debug.txt'), 'a') as f:
+            print(file_group[1], file=f)
+            print(file_group[2], file=f)
+            print(file_group[3], file=f)
+        # slice bc subset by year
+        time_start = str(file_group[0]) + '-01-01 00:00:00'
+        time_end = str(file_group[0]) + '-12-31 23:00:00'
+        ds_sub = ds.sel(time=slice(time_start,time_end)).copy(deep=True)
+        # print statement to debug before data change
+        with option_context('display.max_rows', 10, 'display.max_columns', 10):
+            with open(Path(config['new_dir']+'/siteclimate_debug.txt'), 'a') as f:
+                print('\nYear of subset data:\n', file=f)
+                print(file_group[0], file=f)
+                print(time_start, file=f)
+                print(time_end, file=f)
+                print('\nBiascorrected data:\n', file=f)
+                print(ds_sub, file=f) 
+                print('\nFSDS nan count:\n', file=f)
+                print(fsds_nan, file=f) 
+                print('\nFLDS nan count:\n', file=f)
+                print(flds_nan, file=f) 
+                print('\nPBOT nan count:\n', file=f)
+                print(pbot_nan, file=f) 
+                print('\nTBOT nan count:\n', file=f)
+                print(tbot_nan, file=f) 
+                print('\nQBOT nan count:\n', file=f)
+                print(qbot_nan, file=f) 
+                print('\nPRECIP nan count:\n', file=f)
+                print(prec_nan, file=f) 
+                print('\nWIND nan count:\n', file=f)
+                print(wind_nan, file=f) 
+        # reformat to correct dataarrays
+        ds_sub = ds_sub.rename({
+            'lon':'LONGXY',
+            'lat':'LATIXY',
+            'PRECIP':'PRECTmms',
+            'PBOT':'PSRF'})
+        # convert lon to [0 360]
+        ds_sub['LONGXY'] =(ds_sub['LONGXY'] % 360)
+        # sort dataset by longitude
+        ds_sub = ds_sub.sortby('LONGXY')
+        # assign new site coords after longitude ordering, rename lon, drop site coord
+        ds_sub = ds_sub.rename_dims({'site':'lon'})
+        #ds_sub = ds_sub.drop_vars('site')
+        # add dimension with 1 value for lat
+        ds_sub = ds_sub.expand_dims(dim='lat')
+        # transpose order
+        ds_sub = ds_sub.transpose('time','lat','lon') 
+        # load clm site files for precip/solar/tpqwl
+        with xr.open_dataset(Path(file_group[1]), engine=config['nc_read']['engine'], decode_cf=True, use_cftime=True) as ds_tmp:
+            ds_prec = ds_tmp.load()
+        with xr.open_dataset(Path(file_group[2]), engine=config['nc_read']['engine'], decode_cf=True, use_cftime=True) as ds_tmp:
+            ds_solr = ds_tmp.load()
+        with xr.open_dataset(Path(file_group[3]), engine=config['nc_read']['engine'], decode_cf=True, use_cftime=True) as ds_tmp:
+            ds_tpqw = ds_tmp.load()
+        # print statement to debug before data change
+        with option_context('display.max_rows', 10, 'display.max_columns', 10):
+            with open(Path(config['new_dir']+'/siteclimate_debug.txt'), 'a') as f:
+                print(ds_sub['site_name'], file=f)
+                print('\nReformatted Biascorrected data:\n', file=f)
+                print(ds_sub, file=f)
+                print('\nCLM5 CRUJRAv2.3 Precip site formatted data:\n', file=f)
+                print(ds_prec, file=f)
+                print('\nCLM5 CRUJRAv2.3 Radiation site formatted data:\n', file=f)
+                print(ds_solr, file=f)
+                print('\nCLM5 CRUJRAv2.3 Other site formatted data:\n', file=f)
+                print(ds_tpqw, file=f)
+        # adjust datafiles to have 365_day calendar and hourly timestep
+        new_index = pd.date_range(start=time_start, end=time_end, freq='1H')
+        with open(Path(config['new_dir']+'/siteclimate_debug.txt'), 'a') as f:
+            print('\nnew index for dated:\n', file=f)
+            print(new_index,file=f)
+        new_index = new_index[~((new_index.day == 29) & (new_index.month == 2))]
+        ds_prec = ds_prec.reindex({"time": new_index})
+        ds_solr = ds_solr.reindex({"time": new_index})
+        ds_tpqw = ds_tpqw.reindex({"time": new_index})
+        ds_prec = ds_prec.convert_calendar("365_day")
+        ds_solr = ds_solr.convert_calendar("365_day")
+        ds_tpqw = ds_tpqw.convert_calendar("365_day")
+        # reindexing added time dimension to lat/lon, remove
+        ds_prec['LONGXY'] = ds_prec['LONGXY'].isel(time=1).drop('time')    
+        ds_solr['LONGXY'] = ds_solr['LONGXY'].isel(time=1).drop('time')
+        ds_tpqw['LONGXY'] = ds_tpqw['LONGXY'].isel(time=1).drop('time')
+        ds_prec['LATIXY'] = ds_prec['LATIXY'].isel(time=1).drop('time')    
+        ds_solr['LATIXY'] = ds_solr['LATIXY'].isel(time=1).drop('time')
+        ds_tpqw['LATIXY'] = ds_tpqw['LATIXY'].isel(time=1).drop('time')
+        # replace climate with bc climate
+        ds_prec['PRECTmms'] = ds_sub['PRECTmms'] 
+        ds_solr['FSDS'] = ds_sub['FSDS'] 
+        ds_tpqw['TBOT'] = ds_sub['TBOT'] 
+        ds_tpqw['PSRF'] = ds_sub['PSRF'] 
+        ds_tpqw['QBOT'] = ds_sub['QBOT'] 
+        ds_tpqw['WIND'] = ds_sub['WIND'] 
+        ds_tpqw['FLDS'] = ds_sub['FLDS'] 
+        # count nana by data array
+        fsds_nan = ds_solr['FSDS'].isnull().sum() 
+        flds_nan = ds_tpqw['FLDS'].isnull().sum()
+        pbot_nan = ds_tpqw['PSRF'].isnull().sum()
+        tbot_nan = ds_tpqw['TBOT'].isnull().sum()
+        qbot_nan = ds_tpqw['QBOT'].isnull().sum()
+        prec_nan = ds_prec['PRECTmms'].isnull().sum()
+        wind_nan = ds_tpqw['WIND'].isnull().sum()
+        # print statement to debug after data change
+        with option_context('display.max_rows', 10, 'display.max_columns', 10):
+            with open(Path(config['new_dir']+'/siteclimate_debug.txt'), 'a') as f:
+                print('\nBC Precip dataset:\n', file=f)
+                print(ds_prec, file=f)
+                print('\nBC Radiation dataset:\n', file=f)
+                print(ds_solr, file=f)
+                print('\nBC Other dataset:\n', file=f)
+                print(ds_tpqw, file=f)
+                print('\nFSDS nan count:\n', file=f)
+                print(fsds_nan, file=f) 
+                print('\nFLDS nan count:\n', file=f)
+                print(flds_nan, file=f) 
+                print('\nPBOT nan count:\n', file=f)
+                print(pbot_nan, file=f) 
+                print('\nTBOT nan count:\n', file=f)
+                print(tbot_nan, file=f) 
+                print('\nQBOT nan count:\n', file=f)
+                print(qbot_nan, file=f) 
+                print('\nPRECIP nan count:\n', file=f)
+                print(prec_nan, file=f) 
+                print('\nWIND nan count:\n', file=f)
+                print(wind_nan, file=f) 
+        # save annual output files to new folder with same file names
+        prec_file_out = config['new_dir'] + str(Path(file_group[1]).name) 
+        solr_file_out = config['new_dir'] + str(Path(file_group[2]).name)
+        tpqw_file_out = config['new_dir'] + str(Path(file_group[3]).name)
+        ## set netcdf write characteristics for xarray.to_netcdf()
+        comp = dict(zlib=config['nc_write']['zlib'], shuffle=config['nc_write']['shuffle'],\
+                complevel=config['nc_write']['complevel'],_FillValue=None) #config['nc_write']['fillvalue'])
+        try: 
+            encoding = {var: comp for var in ds_prec.data_vars}
+            ds_prec.to_netcdf(prec_file_out, mode="w", encoding=encoding, \
+                    format=config['nc_write']['format'], \
+                    engine=config['nc_write']['engine'])
+            encoding = {var: comp for var in ds_solr.data_vars}
+            ds_solr.to_netcdf(solr_file_out, mode="w", encoding=encoding, \
+                    format=config['nc_write']['format'], \
+                    engine=config['nc_write']['engine'])
+            encoding = {var: comp for var in ds_tpqw.data_vars}
+            ds_tpqw.to_netcdf(tpqw_file_out, mode="w", encoding=encoding, \
+                    format=config['nc_write']['format'], \
+                    engine=config['nc_write']['engine'])
+        except Exception as error:
+            with open(Path(config['new_dir']+'/siteclimate_debug.txt'), 'a') as f:
+                print(error, file=f)
+            
 # funtion to output pdf report
-def plot_site_graphs(config_file):
+def plot_site_graphs(input_list):
     # read in config
-    config = read_config(config_file)
+    config = read_config(input_list[0])
+    time_avg = input_list[1]
     # create file names to load obs, cru, A/M bias corrected cru netcdfs, and A/M bias netcdfs
     f_obs = Path(config['site_dir'] + "Obs" + "_" + config['site_name'] + "_dat.nc")
     f_cru = Path(config['site_dir'] + "CRUJRA" + "_" + config['site_name'] + "_allyears.nc")
-    f_cru_abc = Path(config['site_dir'] + "ABias" + "_" + config['site_name'] + "_allyears.nc")
-    f_cru_mbc = Path(config['site_dir'] + "MBias" + "_" + config['site_name'] + "_allyears.nc")
-    f_ab = Path(config['site_dir'] + "ABias" + "_" + config['site_name'] + "_mym.nc")
-    f_mb = Path(config['site_dir'] + "MBias" + "_" + config['site_name'] + "_mym.nc")
-    f_cru_mym = Path(config['site_dir'] + "CRUJRA" + "_" + config['site_name'] + "_mym.nc")
-    f_obs_mym = Path(config['site_dir'] + "Obs" + "_" + config['site_name'] + "_mym.nc")
-    
+    f_cru_abc = Path(config['site_dir'] + "ABias" + "_" + config['site_name'] + "_" + time_avg + "_allyears.nc")
+    f_cru_mbc = Path(config['site_dir'] + "MBias" + "_" + config['site_name'] + "_" + time_avg + "_allyears.nc")
+    f_ab = Path(config['site_dir'] + "ABias" + "_" + config['site_name'] + "_" +  time_avg + "_mym.nc")
+    f_mb = Path(config['site_dir'] + "MBias" + "_" + config['site_name'] + "_" +  time_avg + "_mym.nc")
+    f_cru_mym = Path(config['site_dir'] + "CRUJRA" + "_" + config['site_name'] + "_" +  time_avg + "_mym.nc")
+    f_obs_mym = Path(config['site_dir'] + "Obs" + "_" + config['site_name'] + "_" +  time_avg + "_mym.nc")
     # read all the files into memory using context manager
-    with xr.open_dataset(f_obs, engine=config['nc_read']['engine'], decode_cf=True, use_cftime=True) as ds_tmp:
-        ds_obs = ds_tmp.load()
     with xr.open_dataset(f_cru, engine=config['nc_read']['engine'], decode_cf=True, use_cftime=True) as ds_tmp:
         ds_cru = ds_tmp.load()
+    try:
+        with xr.open_dataset(f_obs, engine=config['nc_read']['engine'], decode_cf=True, use_cftime=True) as ds_tmp:
+            ds_obs = ds_tmp.load()
+    except:
+        ds_obs = ds_cru.copy(deep=True)
+        pass
     with xr.open_dataset(f_cru_abc, engine=config['nc_read']['engine'], decode_cf=True, use_cftime=True) as ds_tmp:
         ds_cru_abc = ds_tmp.load()
     with xr.open_dataset(f_cru_mbc, engine=config['nc_read']['engine'], decode_cf=True, use_cftime=True) as ds_tmp:
@@ -1600,11 +2032,13 @@ def plot_site_graphs(config_file):
         ds_cru_mym = ds_tmp.load()
     with xr.open_dataset(f_obs_mym, engine=config['nc_read']['engine']) as ds_tmp:
         ds_obs_mym = ds_tmp.load()
-   
+    # print statment
+    with open(Path(config['site_dir'] + time_avg +'_debug.txt'), 'a') as f:
+        print('data for plotting uploaded', file=f)
     # define function to graph
     def graph_time(ds1, ds2, year_start, year_end, xlab, title, title_size, file_dir, bias, scatter,\
                     time_scale, cru_color, obs_color, leg_text, leg_loc, fontsize, dpi, file_end):
-        for var in ['FSDS','FLDS','TBOT','PBOT','QBOT','WIND']:
+        for var in ['FSDS','FLDS','TBOT','PBOT','QBOT','WIND','PRECIP']:
             try:
                 # set typical scaling
                 add_or_mult = 'none'
@@ -1612,28 +2046,31 @@ def plot_site_graphs(config_file):
                 match var:
                     case 'FSDS':
                         ylab = 'Shortwave (W/$m^{2}$)'
-                        file_part = 'shortwave'
+                        file_part = 'shortwave_' + time_avg
                     case 'FLDS':
                         ylab = 'Longwave (W/$m^{2}$)'
-                        file_part = 'longwave'
+                        file_part = 'longwave_' + time_avg
                     case 'TBOT':
                         if bias == False:
                             factor = -273.15
                             add_or_mult = 'add'
                         ylab = 'Air Temperature ($^\circ$C)'
-                        file_part = 'air_temperature'
+                        file_part = 'air_temperature_' + time_avg
                     case 'PBOT':
                         if bias == False:
                             factor = 0.001
                             add_or_mult = 'multiply'
                         ylab = 'Pressure (kPa)'
-                        file_part = 'air_pressure'
+                        file_part = 'air_pressure_' + time_avg
                     case 'QBOT':
                         ylab = 'Specific Humidity (kg/kg)'
-                        file_part = 'specific_humidity'   
+                        file_part = 'specific_humidity_' + time_avg   
                     case 'WIND':
                         ylab = 'Wind Speed (m/s)'   
-                        file_part = 'wind_speed'
+                        file_part = 'wind_speed_' + time_avg
+                    case 'PRECIP':
+                        ylab = 'Total Precipitation (mm/s)'   
+                        file_part = 'precipitation_' + time_avg
                 # make a deep copy of the first xarray dataset so changes do not propogate to ther graphs
                 ds1_copy = ds1.copy(deep=True)
                 # rescale bias
@@ -1672,7 +2109,7 @@ def plot_site_graphs(config_file):
                         # plot second dataset
                         ds2_copy[var].plot(color=obs_color, alpha=0.8)
                     except Exception as error:
-                        with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
+                        with open(Path(config['site_dir'] + time_avg +'_debug.txt'), 'a') as f:
                             print(error, file=f)
                         pass
                 elif scatter == True:
@@ -1716,7 +2153,7 @@ def plot_site_graphs(config_file):
                         ds2_max = np.nanmax((ds2_xval[ds2_xval != np.inf], ds2_yval[ds2_yval != np.inf]))
                         xr.plot.scatter(ds=ds2_copy, x=x_var, y=y_var, color=obs_color, alpha=0.8)
                     except Exception as error:
-                        with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
+                        with open(Path(config['site_dir'] + time_avg +'_debug.txt'), 'a') as f:
                             print('scatter error:', error, file=f)
                         pass
                 # axis labels
@@ -1763,7 +2200,7 @@ def plot_site_graphs(config_file):
                 # close figure
                 plt.close()
             except Exception as error:
-                with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
+                with open(Path(config['site_dir'] + time_avg +'_debug.txt'), 'a') as f:
                     print(error, file=f)
                 pass
     ###### full time seris plots
@@ -1781,118 +2218,174 @@ def plot_site_graphs(config_file):
     bias = False
     scatter = False
     # uncorrected cru and observations
-    graph_time(ds_cru, ds_obs, config['year_start'], config['year_end'], x_lab, title, title_size, config['site_dir'], bias, scatter, \
+    try:
+        graph_time(ds_cru, ds_obs, config['year_start'], config['year_end'], x_lab, title, title_size, config['site_dir'], bias, scatter, \
                 time_scale, cru_color, obs_color, leg_text, leg_loc, text_size, plot_dpi, '') 
+    except:
+        pass
     # Additive biascorrected cru and observations 
-    title = 'Abc'
-    leg_text = ['CRUJRA abc', 'Observations']
-    graph_time(ds_cru_abc, ds_obs, config['year_start'], config['year_end'], x_lab, title, title_size, config['site_dir'], bias, scatter, \
+    try:
+        title = 'Abc'
+        leg_text = ['CRUJRA abc', 'Observations']
+        graph_time(ds_cru_abc, ds_obs, config['year_start'], config['year_end'], x_lab, title, title_size, config['site_dir'], bias, scatter, \
                 time_scale, cru_color, obs_color, leg_text, leg_loc, text_size, plot_dpi, '_abc') 
+    except:
+        pass
     # Multiplicative biascorrected cru and observations 
-    title = 'Mbc'
-    leg_text = ['CRUJRA mbc', 'Observations']
-    graph_time(ds_cru_mbc, ds_obs, config['year_start'], config['year_end'], x_lab, title, title_size, config['site_dir'], bias, scatter, \
+    try:
+        title = 'Mbc'
+        leg_text = ['CRUJRA mbc', 'Observations']
+        graph_time(ds_cru_mbc, ds_obs, config['year_start'], config['year_end'], x_lab, title, title_size, config['site_dir'], bias, scatter, \
                 time_scale, cru_color, obs_color, leg_text, leg_loc, text_size, plot_dpi, '_mbc') 
+    except:
+        pass
     ###### climate trend graphs
-    cftime_units = 'days since 1901-01-01 00:00:00'
-    ds_cru_cft = ds_cru.copy(deep=True)
-    ds_obs_cft = ds_obs.copy(deep=True)
-    ds_cru_abc_cft = ds_cru_abc.copy(deep=True)
-    ds_cru_mbc_cft = ds_cru_mbc.copy(deep=True)
-    ds_cru_cft.coords['time'] = cft.date2num(ds_cru_cft.indexes['time'], cftime_units)
-    ds_obs_cft.coords['time'] = cft.date2num(ds_obs_cft.indexes['time'], cftime_units)
-    ds_cru_abc_cft.coords['time'] = cft.date2num(ds_cru_abc_cft.indexes['time'], cftime_units)
-    ds_cru_mbc_cft.coords['time'] = cft.date2num(ds_cru_mbc_cft.indexes['time'], cftime_units)
-    x_lab = cftime_units
-    time_scale = 'full'
-    title = 'CRUJRAv2.3'
-    graph_time(ds_cru_cft, ds_obs_cft, config['year_start'], config['year_end'], x_lab, title, title_size, config['site_dir'], bias, scatter, \
+    try:
+        cftime_units = 'days since 1901-01-01 00:00:00'
+        ds_cru_cft = ds_cru.copy(deep=True)
+        ds_obs_cft = ds_obs.copy(deep=True)
+        ds_cru_abc_cft = ds_cru_abc.copy(deep=True)
+        ds_cru_mbc_cft = ds_cru_mbc.copy(deep=True)
+        ds_cru_cft.coords['time'] = cft.date2num(ds_cru_cft.indexes['time'], cftime_units)
+        ds_obs_cft.coords['time'] = cft.date2num(ds_obs_cft.indexes['time'], cftime_units)
+        ds_cru_abc_cft.coords['time'] = cft.date2num(ds_cru_abc_cft.indexes['time'], cftime_units)
+        ds_cru_mbc_cft.coords['time'] = cft.date2num(ds_cru_mbc_cft.indexes['time'], cftime_units)
+        x_lab = cftime_units
+        time_scale = 'full'
+        title = 'CRUJRAv2.3'
+        graph_time(ds_cru_cft, ds_obs_cft, config['year_start'], config['year_end'], x_lab, title, title_size, config['site_dir'], bias, scatter, \
                 time_scale, cru_color, obs_color, leg_text, leg_loc, text_size, plot_dpi, '_trend') 
-    title = 'Abc CRUJRAv2.3'
-    graph_time(ds_cru_abc_cft, ds_obs_cft, config['year_start'], config['year_end'], x_lab, title, title_size, config['site_dir'], bias, scatter, \
+        title = 'Abc CRUJRAv2.3'
+        graph_time(ds_cru_abc_cft, ds_obs_cft, config['year_start'], config['year_end'], x_lab, title, title_size, config['site_dir'], bias, scatter, \
                 time_scale, cru_color, obs_color, leg_text, leg_loc, text_size, plot_dpi, '_abc_trend') 
-    title = 'Mbc CRUJRAv2.3'
-    graph_time(ds_cru_mbc_cft, ds_obs_cft, config['year_start'], config['year_end'], x_lab, title, title_size, config['site_dir'], bias, scatter, \
+        title = 'Mbc CRUJRAv2.3'
+        graph_time(ds_cru_mbc_cft, ds_obs_cft, config['year_start'], config['year_end'], x_lab, title, title_size, config['site_dir'], bias, scatter, \
                 time_scale, cru_color, obs_color, leg_text, leg_loc, text_size, plot_dpi, '_mbc_trend') 
+    except:
+        pass
     ##### daily mean plots 
-    x_lab = 'hours per week of year'
-    time_scale = 'doy'
-    title = 'Mym'
-    # graph uncorrected cru and observations
-    graph_time(ds_cru_mym, ds_obs_mym, config['year_start'], config['year_end'], x_lab, title, title_size, config['site_dir'], bias, scatter, \
+    if time_avg == 'dw':
+        x_lab = 'hours per week of year'
+    elif time_avg == 'w':
+        x_lab = 'week of year'
+    elif time_avg == 'm':
+        x_lab = 'month of year'
+    try:
+        time_scale = 'doy'
+        title = 'Mym'
+        # graph uncorrected cru and observations
+        graph_time(ds_cru_mym, ds_obs_mym, config['year_start'], config['year_end'], x_lab, title, title_size, config['site_dir'], bias, scatter, \
                 time_scale, cru_color, obs_color, leg_text, leg_loc, text_size, plot_dpi, '_mym') 
+    except:
+        pass
     ###### daily additive bias 
-    title = 'ABias'
-    leg_text = ['Obs - Cru']
-    cru_color = 'tab:green'
-    bias = 'add'
-    #  graph uncorrected cru and observations
-    graph_time(ds_ab, None, config['year_start'], config['year_end'], x_lab, title, title_size, config['site_dir'], bias, scatter, \
+    try:
+        title = 'ABias'
+        leg_text = ['Obs - Cru']
+        cru_color = 'tab:green'
+        bias = 'add'
+        #  graph uncorrected cru and observations
+        graph_time(ds_ab, None, config['year_start'], config['year_end'], x_lab, title, title_size, config['site_dir'], bias, scatter, \
                  time_scale, cru_color, obs_color, leg_text, leg_loc, text_size, plot_dpi, '_abias') 
+    except:
+        pass
     ###### daily multiplicative bias 
-    title = 'MBias'
-    leg_text = ['Obs / Cru']
-    cru_color = 'tab:olive'
-    bias = 'multiply'
-    # graph uncorrected cru and observations
-    graph_time(ds_mb, None, config['year_start'], config['year_end'], x_lab, title, title_size, config['site_dir'], bias, scatter, \
+    try:
+        title = 'MBias'
+        leg_text = ['Obs / Cru']
+        cru_color = 'tab:olive'
+        bias = 'multiply'
+        # graph uncorrected cru and observations
+        graph_time(ds_mb, None, config['year_start'], config['year_end'], x_lab, title, title_size, config['site_dir'], bias, scatter, \
                 time_scale, cru_color, obs_color, leg_text, leg_loc, text_size, plot_dpi, '_mbias') 
+    except:
+        pass
     ###### R squared plots
-    # align cru, obs, abias, and mbias, xarray.datasets through their only dimension - time
-    ds_cru2, ds_obs2, ds_abias2, ds_mbias2 = xr.align(ds_cru, ds_obs, ds_cru_abc, ds_cru_mbc)
-    # dictionary to rename climate variables to obs_var
-    original_data_vars = ['FSDS','FLDS','PBOT','RAIN','SNOW','QBOT','TBOT','WIND']
-    new_obs_vars = ['obs_FSDS','obs_FLDS','obs_PBOT','obs_RAIN','obs_SNOW','obs_QBOT','obs_TBOT','obs_WIND']
-    new_cru_vars = ['cru_FSDS','cru_FLDS','cru_PBOT','cru_RAIN','cru_SNOW','cru_QBOT','cru_TBOT','cru_WIND']
-    cru_dict = dict(zip(original_data_vars, new_cru_vars)) 
-    obs_dict = dict(zip(original_data_vars, new_obs_vars))
-    # subset dict to only variables that exist in observations to rename
-    obs_dict = {k: obs_dict[k] for k in ds_obs2.data_vars}
-    with open(Path(config['site_dir'] + 'debug.txt'), 'w') as f:
-        print(obs_dict, file=f)
-    # rename datasets for combination
-    ds_obs2 = ds_obs2.rename(obs_dict)
-    ds_cru2 = ds_cru2.rename(cru_dict)
-    ds_abias2 = ds_abias2.rename(cru_dict)
-    ds_mbias2 = ds_mbias2.rename(cru_dict)
-    # add obs data to cru datasets
-    for var in list(ds_obs2.data_vars):
-        ds_obs_data = ds_obs2[var]
-        ds_cru2[var] = ds_obs_data
-        ds_abias2[var] = ds_obs_data
-        ds_mbias2[var] = ds_obs_data
-    # new grouping coordinate must be integer data type and added to time dimenion
-    ds_cru3 = ds_cru2.assign_coords(groupvar = ('time', map_groups(ds_cru2.indexes['time'], 'weekofyear', 'hour', config)))
-    ds_abias3 = ds_abias2.assign_coords(groupvar = ('time', map_groups(ds_abias2.indexes['time'], 'weekofyear', 'hour', config)))
-    ds_mbias3 = ds_mbias2.assign_coords(groupvar = ('time', map_groups(ds_mbias2.indexes['time'], 'weekofyear', 'hour', config)))
-    # groupby new coordinate
-    ds_cru3 = ds_cru3.groupby('groupvar').mean() 
-    ds_abias3 = ds_abias3.groupby('groupvar').mean() 
-    ds_mbias3 = ds_mbias3.groupby('groupvar').mean() 
-    # create additive plot of uncorrected cru vs obs and corrected cru vs obs to show correction toward 1:1 line
-    title = 'Abc Mym'
-    leg_text = ['Cru vs Obs','Abc vs Obs']
-    cru_color = 'tab:orange'
-    time_scale = False
-    bias = False
-    scatter = True
-    graph_time(ds_cru3, ds_abias3, config['year_start'], config['year_end'], x_lab, title, title_size, config['site_dir'], bias, scatter, \
-                time_scale, cru_color, obs_color, leg_text, leg_loc, text_size, plot_dpi, '_abc_mym_rsqr') 
-    # create additive plot of uncorrected cru vs obs and corrected cru vs obs to show correction toward 1:1 line
-    title = 'Mbc Mym'
-    leg_text = ['Cru vs Obs','Mbc vs Obs']
-    graph_time(ds_cru3, ds_mbias3, config['year_start'], config['year_end'], x_lab, title, title_size, config['site_dir'], bias, scatter, \
-                time_scale, cru_color, obs_color, leg_text, leg_loc, text_size, plot_dpi, '_mbc_mym_rsqr') 
-    # create additive plot of uncorrected cru vs obs and corrected cru vs obs to show correction toward 1:1 line
-    title = 'Abc All'
-    leg_text = ['Cru vs Obs','Abc vs Obs']
-    graph_time(ds_cru2, ds_abias2, config['year_start'], config['year_end'], x_lab, title, title_size, config['site_dir'], bias, scatter, \
-                time_scale, cru_color, obs_color, leg_text, leg_loc, text_size, plot_dpi, '_abc_rsqr') 
-    # create additive plot of uncorrected cru vs obs and corrected cru vs obs to show correction toward 1:1 line
-    title = 'Mbc All'
-    leg_text = ['Cru vs Obs','Mbc vs Obs']
-    graph_time(ds_cru2, ds_mbias2, config['year_start'], config['year_end'], x_lab, title, title_size, config['site_dir'], bias, scatter, \
-                time_scale, cru_color, obs_color, leg_text, leg_loc, text_size, plot_dpi, '_mbc_rsqr') 
+    try:
+        # align cru, obs, abias, and mbias, xarray.datasets through their only dimension - time
+        ds_cru_org2, ds_obs_org2, ds_abias_org2, ds_mbias_org2 = xr.align(ds_cru, ds_obs, ds_cru_abc, ds_cru_mbc)
+        # dictionary to rename climate variables to obs_var
+        original_data_vars = ['FSDS','FLDS','PBOT','PRECIP','RAIN','SNOW','QBOT','TBOT','WIND']
+        new_obs_vars = ['obs_FSDS','obs_FLDS','obs_PBOT','obs_PRECIP','obs_RAIN','obs_SNOW','obs_QBOT','obs_TBOT','obs_WIND']
+        new_cru_vars = ['cru_FSDS','cru_FLDS','cru_PBOT','cru_PRECIP','cru_RAIN','cru_SNOW','cru_QBOT','cru_TBOT','cru_WIND']
+        cru_dict = dict(zip(original_data_vars, new_cru_vars)) 
+        obs_dict = dict(zip(original_data_vars, new_obs_vars))
+        # subset dict to only variables that exist in observations to rename
+        obs_dict = {k: obs_dict[k] for k in ds_obs_org2.data_vars}
+        with open(Path(config['site_dir'] + time_avg +'_debug.txt'), 'w') as f:
+            print(obs_dict, file=f)
+        # rename datasets for combination
+        ds_obs_org2 = ds_obs_org2.rename(obs_dict)
+        ds_cru_org2 = ds_cru_org2.rename(cru_dict)
+        ds_abias_org2 = ds_abias_org2.rename(cru_dict)
+        ds_mbias_org2 = ds_mbias_org2.rename(cru_dict)
+        # add obs data to cru datasets
+        for var in list(ds_obs_org2.data_vars):
+            ds_obs_data = ds_obs_org2[var]
+            ds_cru_org2[var] = ds_obs_data
+            ds_abias_org2[var] = ds_obs_data
+            ds_mbias_org2[var] = ds_obs_data
+        # copy original data to new variable names for zero removal
+        ds_cru2 = ds_cru_org2.copy(deep=True)
+        ds_abias2 = ds_abias_org2.copy(deep=True)
+        ds_mbias2 = ds_mbias_org2.copy(deep=True)
+        # remove zero rain events for r-square plot and seasonal averages
+        #if 'cru_PRECIP' in list(ds_cru2.data_vars):
+        #    ds_cru2['cru_PRECIP'].loc[ds_cru2['cru_PRECIP'] <= 0] = np.nan
+        #    ds_cru2['obs_PRECIP'].loc[ds_cru2['obs_PRECIP'] <= 0] = np.nan
+        #    ds_abias2['cru_PRECIP'].loc[ds_abias2['cru_PRECIP'] <= 0] = np.nan
+        #    ds_abias2['obs_PRECIP'].loc[ds_abias2['obs_PRECIP'] <= 0] = np.nan
+        #    ds_mbias2['cru_PRECIP'].loc[ds_mbias2['cru_PRECIP'] <= 0] = np.nan
+        #    ds_mbias2['obs_PRECIP'].loc[ds_mbias2['obs_PRECIP'] <= 0] = np.nan
+        # new grouping coordinate must be integer data type and added to time dimenion
+        if time_avg == 'dw':
+            main_window = 'weekofyear'
+            sub_window = 'hour'
+        elif time_avg == 'w':
+            main_window = 'weekofyear'
+            sub_window = ''
+        elif time_avg == 'm':
+            main_window = 'month'
+            sub_window = ''
+        ds_cru3 = ds_cru2.assign_coords(groupvar = ('time', map_groups(ds_cru2.indexes['time'], main_window, sub_window, config)))
+        ds_abias3 = ds_abias2.assign_coords(groupvar = ('time', map_groups(ds_abias2.indexes['time'], main_window, sub_window, config)))
+        ds_mbias3 = ds_mbias2.assign_coords(groupvar = ('time', map_groups(ds_mbias2.indexes['time'], main_window, sub_window, config)))
+        with open(Path(config['site_dir'] + time_avg +'_debug.txt'), 'a') as f:
+            print(ds_cru3, file=f)
+            print(ds_abias3, file=f)
+            print(ds_mbias3, file=f)
+        # groupby new coordinate
+        ds_cru3 = ds_cru3.groupby('groupvar').mean() 
+        ds_abias3 = ds_abias3.groupby('groupvar').mean() 
+        ds_mbias3 = ds_mbias3.groupby('groupvar').mean() 
+        # create additive plot of uncorrected cru vs obs and corrected cru vs obs to show correction toward 1:1 line
+        title = 'Abc Mym'
+        leg_text = ['Cru vs Obs','Abc vs Obs']
+        cru_color = 'tab:orange'
+        time_scale = False
+        bias = False
+        scatter = True
+        graph_time(ds_cru3, ds_abias3, config['year_start'], config['year_end'], x_lab, title, title_size, config['site_dir'], bias, scatter, \
+                    time_scale, cru_color, obs_color, leg_text, leg_loc, text_size, plot_dpi, '_abc_mym_rsqr') 
+        # create additive plot of uncorrected cru vs obs and corrected cru vs obs to show correction toward 1:1 line
+        title = 'Mbc Mym'
+        leg_text = ['Cru vs Obs','Mbc vs Obs']
+        graph_time(ds_cru3, ds_mbias3, config['year_start'], config['year_end'], x_lab, title, title_size, config['site_dir'], bias, scatter, \
+                    time_scale, cru_color, obs_color, leg_text, leg_loc, text_size, plot_dpi, '_mbc_mym_rsqr') 
+        # create additive plot of uncorrected cru vs obs and corrected cru vs obs to show correction toward 1:1 line
+        title = 'Abc All'
+        leg_text = ['Cru vs Obs','Abc vs Obs']
+        graph_time(ds_cru_org2, ds_abias_org2, config['year_start'], config['year_end'], x_lab, title, title_size, config['site_dir'], bias, scatter, \
+                    time_scale, cru_color, obs_color, leg_text, leg_loc, text_size, plot_dpi, '_abc_rsqr') 
+        # create additive plot of uncorrected cru vs obs and corrected cru vs obs to show correction toward 1:1 line
+        title = 'Mbc All'
+        leg_text = ['Cru vs Obs','Mbc vs Obs']
+        graph_time(ds_cru_org2, ds_mbias_org2, config['year_start'], config['year_end'], x_lab, title, title_size, config['site_dir'], bias, scatter, \
+                    time_scale, cru_color, obs_color, leg_text, leg_loc, text_size, plot_dpi, '_mbc_rsqr') 
+    except Exception as error:
+        with open(Path(config['site_dir'] + time_avg + '_debug.txt'), 'a') as f:
+            print(error, file=f)
+        pass
 
 # Generate PDF report using Reportlab
 def climate_pdf_report(config_list):
@@ -2097,13 +2590,13 @@ def climate_pdf_report(config_list):
 
     ######## site pages
     # climate driver list
-    driver_list = ['shortwave', 'longwave', 'air_temperature', 'air_pressure', 'specific_humidity', 'wind_speed', 'shortwave']
+    driver_list = ['shortwave_dw', 'longwave_dw', 'air_temperature_dw', 'air_pressure_dw', 'specific_humidity_dw', 'wind_speed_dw', 'precipitation_dw']
     # loop through sites
     for site in config_list:
         # get site info from config file
         config = read_config(site)
         site_name = config['site_name']
-        with open(Path(config['site_dir'] + 'debug.txt'), 'w') as f:
+        with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
             print(full_text, file=f)
         ###### first site specific page
         # create page and add graphs/text
@@ -2120,7 +2613,7 @@ def climate_pdf_report(config_list):
         v_row = 0.9
         v_space = 2.25
         drawn_width = WIDTH/2 - 1.25*inch
-        image_path = config['site_dir'] + 'shortwave.png'
+        image_path = config['site_dir'] + 'shortwave_dw.png'
         obj_h = get_height(image_path, drawn_width)
         file_list = [s + '.png' for s in driver_list]
         # place plots into pdf
@@ -2143,7 +2636,7 @@ def climate_pdf_report(config_list):
         v_row = 0.9
         v_space = 1.35
         drawn_width = WIDTH/3 - 1.1*inch
-        image_path = config['site_dir'] + 'shortwave_mym.png'
+        image_path = config['site_dir'] + 'shortwave_dw_mym.png'
         obj_h = get_height(image_path, drawn_width)
         # add plots to pdf 
         add_plots(c, config['site_dir'], drawn_width, HEIGHT, obj_h, inch, v_row, v_space, file_list, col_pos, col_num) 
@@ -2163,7 +2656,7 @@ def climate_pdf_report(config_list):
         v_row = 0.9
         v_space = 2.25
         drawn_width = WIDTH/2 - 1.25*inch
-        image_path = config['site_dir'] + 'shortwave_abc.png'
+        image_path = config['site_dir'] + 'shortwave_dw_abc.png'
         obj_h = get_height(image_path, drawn_width)
         file_list1 = [s + '_abc.png' for s in driver_list[:4]]
         file_list2 = [s + '_mbc.png' for s in driver_list[:4]]
@@ -2195,7 +2688,7 @@ def climate_pdf_report(config_list):
         v_row = 0.9
         v_space = 2.25
         drawn_width = WIDTH/3 - 0.5*inch
-        image_path = config['site_dir'] + 'shortwave_abc.png'
+        image_path = config['site_dir'] + 'shortwave_dw_abc.png'
         obj_h = get_height(image_path, drawn_width)
         file_list1 = [s + '_abc_mym_rsqr.png' for s in driver_list[:4]]
         file_list2 = [s + '_abc_rsqr.png' for s in driver_list[:4]]
@@ -2234,7 +2727,7 @@ def climate_pdf_report(config_list):
         v_row = 0.9
         v_space = 2.25
         drawn_width = WIDTH/3 - 0.20*inch
-        image_path = config['site_dir'] + 'shortwave_abc.png'
+        image_path = config['site_dir'] + 'shortwave_dw_abc.png'
         obj_h = get_height(image_path, drawn_width)
         file_list1 = [s + '_trend.png' for s in driver_list[:4]]
         file_list2 = [s + '_abc_trend.png' for s in driver_list[:4]]

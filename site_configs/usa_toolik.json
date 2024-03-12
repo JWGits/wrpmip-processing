@@ -4,12 +4,12 @@
 	"year_end": 2021,
 	"clm_landmask": "/projects/warpmip/shared/model_outputs/CLM5_sparse_grid_tests/domain.lnd.360x720_cruncep.100429.nc",	
 	"reanalysis_dir": 
-		"/projects/warpmip/shared/model_outputs/CLM5_sparse_grid_tests/archive/Sites_CRUJRA_exice_CLM_transient/lnd/hist/",
+		"/projects/warpmip/shared/model_outputs/CLM5_site-level_simulations/Derecho_CLM5_CRUJRAv2.3_14sites_transient/lnd/hist/",
 	"site_dir":
-		"/projects/warpmip/shared/forcing_data/biascorrected_forcing/USA-Toolik/crujra/",
-	"lndgrid": 20,
-	"cru_GMT_adj": -10,
-	"obs_GMT_adj": 0,
+		"/projects/warpmip/shared/forcing_data/biascorrected_forcing/USA-Toolik/crujra_sites/",
+	"lndgrid": 1,
+	"cru_GMT_adj": 0,
+	"obs_GMT_adj": 10,
 	"lat": 68.63330,
 	"lon": -149.71700,
 	"obs": 	{
@@ -20,14 +20,15 @@
 			"sep": ",",
 			"datetime_format": "%Y-%m-%d %H%M",
 			"datetime_cols": ["date","hour"],		
-			"cols_old": ["date","hour","air_temp_3m","sw_up_avg","lw_up_avg","barometer_mbar","rh_3m", "wind_sp_5m"],
+			"cols_old": ["date","hour","air_temp_3m","sw_up_avg","lw_up_avg","barometer_mbar","rh_3m", "wind_sp_5m","rain"],
 			"cols_new": {
 				"air_temp_3m": "TBOT",
 				"sw_up_avg": "FSDS",
 				"lw_up_avg": "FLDS",
 				"barometer_mbar": "PBOT",
 				"rh_3m": "RH",
-				"wind_sp_5m": "WIND"
+				"wind_sp_5m": "WIND",
+				"rain": "PRECIP"
 			}
 		}
 	},

@@ -4,12 +4,12 @@
 	"year_end": 2021,
 	"clm_landmask": "/projects/warpmip/shared/model_outputs/CLM5_sparse_grid_tests/domain.lnd.360x720_cruncep.100429.nc",
 	"reanalysis_dir": 
-		"/projects/warpmip/shared/model_outputs/CLM5_sparse_grid_tests/archive/Sites_CRUJRA_exice_CLM_transient/lnd/hist/",
+		"/projects/warpmip/shared/model_outputs/CLM5_site-level_simulations/Derecho_CLM5_CRUJRAv2.3_14sites_transient/lnd/hist/",
 	"site_dir":
-		"/projects/warpmip/shared/forcing_data/biascorrected_forcing/SWE-Abisko/crujra/",
-	"lndgrid": 26,
-	"cru_GMT_adj": 2,
-	"obs_GMT_adj": 2,
+		"/projects/warpmip/shared/forcing_data/biascorrected_forcing/SWE-Abisko/crujra_sites/",
+	"lndgrid": 14,
+	"cru_GMT_adj": 0,
+	"obs_GMT_adj": 0,
 	"lat": 68.35000,
 	"lon": 18.82000,
 	"obs": 	{
@@ -20,14 +20,15 @@
 			"sep": ",",
 			"datetime_format": "%m/%d/%Y %H:%M",
 			"datetime_cols": ["Timestamp (UTC)"],
-			"cols_old": ["Timestamp (UTC)","AirTemperature","GlobalRadiation(w/m2)","LongwaveRadiation(w/m2)","Pressure(mbar)","RelativeHumidity(%)","WindSpeed(m/s)"],
+			"cols_old": ["Timestamp (UTC)","AirTemperature","GlobalRadiation(w/m2)","LongwaveRadiation(w/m2)","Pressure(mbar)","RelativeHumidity(%)","WindSpeed(m/s)","Precipitation(mm)"],
 			"cols_new": {
 				"AirTemperature": "TBOT",
 				"GlobalRadiation(w/m2)": "FSDS",
 				"LongwaveRadiation(w/m2)": "FLDS",
 				"Pressure(mbar)": "PBOT",
 				"RelativeHumidity(%)": "RH",
-				"WindSpeed(m/s)": "WIND"
+				"WindSpeed(m/s)": "WIND",
+				"Precipitation(mm)": "PRECIP"
 			}
 		}
 	},

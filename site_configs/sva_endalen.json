@@ -4,12 +4,12 @@
 	"year_end": 2021,
 	"clm_landmask": "/projects/warpmip/shared/model_outputs/CLM5_sparse_grid_tests/domain.lnd.360x720_cruncep.100429.nc",	
 	"reanalysis_dir": 
-		"/projects/warpmip/shared/model_outputs/CLM5_sparse_grid_tests/archive/Sites_CRUJRA_exice_CLM_transient/lnd/hist/",
+		"/projects/warpmip/shared/model_outputs/CLM5_site-level_simulations/Derecho_CLM5_CRUJRAv2.3_14sites_transient/lnd/hist/",
 	"site_dir":
-		"/projects/warpmip/shared/forcing_data/biascorrected_forcing/SVA-Endalen/crujra/",
-	"lndgrid": 6,
-	"cru_GMT_adj": 1,
-	"obs_GMT_adj": 0,
+		"/projects/warpmip/shared/forcing_data/biascorrected_forcing/SVA-Endalen/crujra_sites/",
+	"lndgrid": 13,
+	"cru_GMT_adj": 0,
+	"obs_GMT_adj": -1,
 	"lat": 78.19000,
 	"lon": 15.76000,
 	"obs": 	{

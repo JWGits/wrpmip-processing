@@ -4,12 +4,12 @@
 	"year_end": 2021,
 	"clm_landmask": "/projects/warpmip/shared/model_outputs/CLM5_sparse_grid_tests/domain.lnd.360x720_cruncep.100429.nc",	
 	"reanalysis_dir": 
-		"/projects/warpmip/shared/model_outputs/CLM5_sparse_grid_tests/archive/Sites_CRUJRA_exice_CLM_transient/lnd/hist/",
+		"/projects/warpmip/shared/model_outputs/CLM5_site-level_simulations/Derecho_CLM5_CRUJRAv2.3_14sites_transient/lnd/hist/",
 	"site_dir":
-		"/projects/warpmip/shared/forcing_data/biascorrected_forcing/CAN-DaringLake/crujra/",
-	"lndgrid": 35,
-	"cru_GMT_adj": -7,
-	"obs_GMT_adj": 0,
+		"/projects/warpmip/shared/forcing_data/biascorrected_forcing/CAN-DaringLake/crujra_sites/",
+	"lndgrid": 5,
+	"cru_GMT_adj": 0,
+	"obs_GMT_adj": 7,
 	"lat": 64.86670,
 	"lon": -111.56700,
 	"obs": 	{
@@ -20,13 +20,14 @@
 			"freq": "H",
 			"datetime_format": "%Y-%m-%d %H%M",
 			"datetime_cols": ["Year","Month","Day","Hour"],
-			"cols_old": ["Year","Month","Day","Time","Air Temp","Relative Humidity","Wind Speed","Incoming SW Radiation"],
+			"cols_old": ["Year","Month","Day","Time","Air Temp","Relative Humidity","Wind Speed","Incoming SW Radiation","Rainfall"],
 			"cols_new": {
 				"Time": "Hour",
 				"Air Temp": "TBOT",
 				"Incoming SW Radiation": "FSDS",
 				"Relative Humidity": "RH",
-				"Wind Speed": "WIND"
+				"Wind Speed": "WIND",
+				"Rainfall": "PRECIP"
 			}
 		},
 		"f2": {
@@ -36,13 +37,14 @@
 			"freq": "H",
 			"datetime_format": "%Y-%m-%d %H%M",
 			"datetime_cols": ["Year","Month","Day","Hour"],
-			"cols_old": ["Year","Month","Day","Time","Air Temperature","Relative Humidity","Wind Speed","Incoming SW Radiation"],
+			"cols_old": ["Year","Month","Day","Time","Air Temperature","Relative Humidity","Wind Speed","Incoming SW Radiation","Rainfall"],
 			"cols_new": {
 				"Time": "Hour",
 				"Air Temperature": "TBOT",
 				"Incoming SW Radiation": "FSDS",
 				"Relative Humidity": "RH",
-				"Wind Speed": "WIND"
+				"Wind Speed": "WIND",
+				"Rainfall": "PRECIP"
 			}
 		}
 	},
