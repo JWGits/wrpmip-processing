@@ -1829,7 +1829,7 @@ def replace_clm_14site_climate(input_list):
     qbot_nan = ds['QBOT'].isnull().sum()
     prec_nan = ds['PRECIP'].isnull().sum()
     wind_nan = ds['WIND'].isnull().sum()
-    # create lids['FSDS'].isnull()    flds_nan = sts of Precip/solar/TPQW files by year (1901-2021)
+    # create list of Precip/solar/TPQW files by year (1901-2021)
     year_list = list(range(1901,2021+1,1))
     file_list = []
     for year in year_list:
@@ -1879,7 +1879,7 @@ def replace_clm_14site_climate(input_list):
                 print(prec_nan, file=f) 
                 print('\nWIND nan count:\n', file=f)
                 print(wind_nan, file=f) 
-        # reformat to correct dataarrays
+        # reformat names to match output dataarrays
         ds_sub = ds_sub.rename({
             'lon':'LONGXY',
             'lat':'LATIXY',
