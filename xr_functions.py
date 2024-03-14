@@ -3415,15 +3415,18 @@ def aggregate_models_warming(f):
     ds_sites = xr.merge(ds_list)
     with open(Path(config['output_dir'] + '/combined/2000-2021_debug.txt'), 'a') as pf:
         print(ds_sites, file=pf)
-    # set zarr compression and encoding
-    #compressor = zarr.Blosc(cname='zstd', clevel=3, shuffle=2)
-    #comp = dict(chunks={})
-    # encoding
-    #encoding = {var: comp for var in ds_sites.data_vars}
     # write zarr
     out_file = config['output_dir'] + 'combined/WrPMIP_all_models_sites_2000-2021.zarr'
     #ds_sites.chunk({'time': -1}).to_zarr(out_file, mode="w")
     ds_sites.to_zarr(out_file, mode="w")
+    # also output aggregate netcdf as well
+    comp = dict(zlib=True, shuffle=False,\
+            complevel=0,_FillValue=None) #config['nc_write']['fillvalue'])
+    encoding = {var: comp for var in ds_sites.data_vars}
+    ds_sites.to_netcdf(prec_file_out, mode="w", encoding=encoding, \
+            format='NETCDF4_CLASSIC', \
+            engine='netcdf4')
+    
     
 # combine all models
 def aggregate_models_baseline(f):
