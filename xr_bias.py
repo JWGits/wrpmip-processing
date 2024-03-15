@@ -71,7 +71,8 @@ def main():
     # create clm site subset forcing files
     config_clmsites = '/scratch/jw2636/wrpmip/python_codes/config_clmclimate2.json'
     bc_climate_file = nc_file_out
-    xrfx.replace_clm_14site_climate([config_clmsites, bc_climate_file])
+    surf_file = '/projects/warpmip/shared/forcing_data/CRUJRAv2.3/biascorrected_14sites/surfdata_WrPMIP_14sites_CMIP6_simyr2000_c240215.nc'
+    xrfx.replace_clm_14site_climate([config_clmsites, bc_climate_file, surf_file])
     # create pdf report        
     xrfx.climate_pdf_report(config['config_files']) 
 

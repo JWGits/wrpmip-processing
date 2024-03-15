@@ -1817,7 +1817,63 @@ def replace_clm_14site_climate(input_list):
     # read in config_clmsites
     config = read_config(input_list[0])
     # read in bc file location
-    bc_file = Path(input_list[1]) 
+    bc_file = Path(input_list[1])
+    surf_file = Path(input_list[2]) 
+    # remove previous copy of crujra folder
+    rmv_dir(config['new_dir'])
+    # remake directory for subset files, grant permission
+    Path(config['new_dir']).mkdir(parents=True, exist_ok=True)
+    # open surface dataset
+    with xr.open_dataset(surf_file, engine=config['nc_read']['engine'], decode_cf=True, use_cftime=True) as ds_tmp:
+        ds = ds_tmp.load()
+    try:   
+        # add experimental warming onset for OTCs
+        with open(Path(config['new_dir']+'/siteclimate_debug.txt'), 'w') as f:
+            print('Starting surface data addition of warming onset:\n', file=f)
+            print(ds, file=f)
+            print('Longitude of current gridcells:\n', file=f)
+            print(ds['LONGXY'], file=f)
+        # define OTC and SF experimental start dates at each site
+        otc_start = [2008,2015,1994,1996,2005,2011,2012,2013,2007,2017,2012,2003,2002,1994]
+        sf_start = [2008,2015,1994,1996,2005,2011,2017,2012,2007,2017,2012,2003,2002,1994]
+        # create copy of original ds
+        ds_otc = ds.copy(deep=True)
+        ds_sf = ds.copy(deep=True)
+        # copy dataset that has correct dims into warming_onset var, replace values
+        ds_otc['warming_onset'] = ds_otc['LONGXY']
+        ds_otc['warming_onset'].values = otc_start
+        ds_sf['warming_onset'] = ds_sf['LONGXY']
+        ds_sf['warming_onset'].values = sf_start
+        # check surf data addition
+        with open(Path(config['new_dir']+'/siteclimate_debug.txt'), 'a') as f:
+            print('updated surface data - OTC:\n', file=f)
+            print(ds_otc, file=f)
+            print('warming_onset variable - OTC:\n', file=f)
+            print(ds_otc['warming_onset'], file=f)
+            print('updated surface data - SF:\n', file=f)
+            print(ds_sf, file=f)
+            print('warming_onset variable - SF:\n', file=f)
+            print(ds_sf['warming_onset'], file=f)
+        # output OTC/SF surfdata
+        otc_fname = str(surf_file.parent) + '/' + str(surf_file.stem) + '_otc.nc'
+        sf_fname = str(surf_file.parent) + '/' + str(surf_file.stem) + '_sf.nc'
+        ## set netcdf write characteristics for xarray.to_netcdf()
+        comp = dict(zlib=config['nc_write']['zlib'], shuffle=config['nc_write']['shuffle'],\
+                complevel=config['nc_write']['complevel'],_FillValue=None) #config['nc_write']['fillvalue'])
+        # set encoding output otc file
+        encoding = {var: comp for var in ds_otc.data_vars}
+        ds_otc.to_netcdf(otc_fname, mode="w", encoding=encoding, \
+                format=config['nc_write']['format'], \
+                engine=config['nc_write']['engine'])
+        # set encoding output sf file
+        encoding = {var: comp for var in ds_sf.data_vars}
+        ds_sf.to_netcdf(sf_fname, mode="w", encoding=encoding, \
+                format=config['nc_write']['format'], \
+                engine=config['nc_write']['engine'])
+    except Exception as error:
+        with open(Path(config['new_dir']+'/siteclimate_debug.txt'), 'a') as f:
+            print(error, file=f)
+            print('wtf', file=f)
     # open biascorrected climate dataset file
     with xr.open_dataset(bc_file, engine=config['nc_read']['engine'], decode_cf=True, use_cftime=True) as ds_tmp:
         ds = ds_tmp.load()
@@ -1838,12 +1894,8 @@ def replace_clm_14site_climate(input_list):
         solr_file = [f for f in files if 'Solr' in f]
         tpqw_file = [f for f in files if 'TPQWL' in f]
         file_list.append([year, prec_file[0], solr_file[0], tpqw_file[0]])
-    # remove previous copy of crujra folder
-    rmv_dir(config['new_dir'])
-    # remake directory for subset files, grant permission
-    Path(config['new_dir']).mkdir(parents=True, exist_ok=True)
     # reset debug print statement before loop
-    with open(Path(config['new_dir']+'/siteclimate_debug.txt'), 'w') as f:
+    with open(Path(config['new_dir']+'/siteclimate_debug.txt'), 'a') as f:
         print('Starting data replacement loop:\n', file=f)
     # loop through 1901-2021 file groups
     for file_group in file_list:
