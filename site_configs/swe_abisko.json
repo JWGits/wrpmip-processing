@@ -16,7 +16,7 @@
 		"f1": {
 			"name": "/projects/warpmip/shared/forcing_data/biascorrected_forcing/SWE-Abisko/AWS_Hourly_2005-2022.csv", 	
 			"skip_rows": null,
-			"freq": "1H",
+			"freq": "h",
 			"sep": ",",
 			"datetime_format": "%m/%d/%Y %H:%M",
 			"datetime_cols": ["Timestamp (UTC)"],

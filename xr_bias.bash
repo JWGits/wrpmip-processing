@@ -14,9 +14,10 @@
 # import bash shell environment
 eval "$(conda shell.bash hook)"
 # load anaconda module and conda env
-module load openmpi/4.1.4
+#module load openmpi/4.1.4
 module load anaconda3
-conda activate xarray2
+conda activate /scratch/jw2636/wrpmip/conda_envs/r_env
+
 # call python scripts
 mpirun -np 44 --bind-to core --map-by socket --report-bindings python3 xr_bias.py $1
 wait

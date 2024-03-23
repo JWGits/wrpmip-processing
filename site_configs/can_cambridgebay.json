@@ -102,7 +102,7 @@
 			], 	
 			"skip_rows": null,
 			"sep": ",",
-			"freq": "H",
+			"freq": "h",
 			"datetime_format": "%Y-%m-%d %H:%M",
 			"datetime_cols": ["Date/Time (LST)"],
 			"cols_old": ["Date/Time (LST)","Temp (°C)","Rel Hum (%)","Precip. Amount (mm)","Wind Spd (km/h)","Stn Press (kPa)"],

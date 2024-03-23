@@ -600,7 +600,7 @@ def subset_reanalysis(f):
     # add snow and rain to make total precip
     ds['PRECIP'] = ds['RAIN'] + ds['SNOW']
     # shift the index by offset from GMT time at location 
-    ds.coords['time'] = ds.indexes['time'].round('H') #.shift(config['cru_GMT_adj'], 'H')
+    ds.coords['time'] = ds.indexes['time'].round('h') #.shift(config['cru_GMT_adj'], 'H')
     ## set encoding for netcdfs
     comp = dict(zlib=config['nc_write']['zlib'], shuffle=config['nc_write']['shuffle'],\
                 complevel=config['nc_write']['complevel'], _FillValue=None) #config['nc_write']['fillvalue'])
@@ -754,7 +754,7 @@ def combine_site_observations(config_file):
             # to fix this I have to force all columns to numeric which makes all non-numbers into NaNs
             cols_to_num = ['TBOT','FSDS','FLDS','PBOT','RH','WIND']
             for col in cols_to_num:
-                obs_data.loc[:,col] = pd.to_numeric(obs_data[col], errors='coerce')
+                obs_data[col] = pd.to_numeric(obs_data[col], errors='coerce')
             # convert numerical timestamp to string for datetime.strptime
             obs_data['time'] = obs_data['Timestamp (UTC)'].astype(str)
             # remove -9999 values, as numbers are float values have to use np.isclose
@@ -778,6 +778,7 @@ def combine_site_observations(config_file):
             obs_data['PRECIP'] = obs_data['PRECIP']/3600
             with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
                 print(obs_data, file=f)
+                print(obs_data.dtypes, file=f)
         case 'RUS-Seida':
             # make time column from datetime string
             obs_data['time'] = obs_data['datetimeGMT3'].astype(str) # + " " + obs_data['hourGMT3'].astype(str).str.zfill(2)
@@ -788,7 +789,7 @@ def combine_site_observations(config_file):
             # set index to timestamp
             obs_data = obs_data.set_index('time')
             # resample the sub-hourly data to hourly averages
-            obs_data = obs_data.resample('1H').mean()
+            obs_data = obs_data.resample('1h').mean()
             # change index to str with correct format
             obs_data.index = obs_data.index.strftime('%Y-%m-%d %H:%M:%S')
             # convert numerical timestamp to string for datetime.strptime to integrate back into set coding below
@@ -1438,6 +1439,7 @@ def combine_site_observations(config_file):
         with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
             print('past4', file=f)
         # set dateime as index
+        print(obs_data['time'].dtypes)
         obs_data = obs_data.set_index(['time'])
         with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
             print('past5', file=f)
@@ -1454,7 +1456,7 @@ def combine_site_observations(config_file):
         with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
             print('past8', file=f)
         # shift time index by offset from GMT described in observational dataset
-        ds.coords['time'] = ds.indexes['time'].shift(config['obs_GMT_adj'], 'H')
+        ds.coords['time'] = ds.indexes['time'].shift(config['obs_GMT_adj'], 'h')
         with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
             print('past9', file=f)
             print(ds, file=f)
@@ -2085,7 +2087,7 @@ def plot_site_graphs(input_list):
     with xr.open_dataset(f_obs_mym, engine=config['nc_read']['engine']) as ds_tmp:
         ds_obs_mym = ds_tmp.load()
     # print statment
-    with open(Path(config['site_dir'] + time_avg +'_debug.txt'), 'a') as f:
+    with open(Path(config['site_dir'] + time_avg +'_debug.txt'), 'w') as f:
         print('data for plotting uploaded', file=f)
     # define function to graph
     def graph_time(ds1, ds2, year_start, year_end, xlab, title, title_size, file_dir, bias, scatter,\
@@ -2273,7 +2275,9 @@ def plot_site_graphs(input_list):
     try:
         graph_time(ds_cru, ds_obs, config['year_start'], config['year_end'], x_lab, title, title_size, config['site_dir'], bias, scatter, \
                 time_scale, cru_color, obs_color, leg_text, leg_loc, text_size, plot_dpi, '') 
-    except:
+    except Exception as error:
+        with open(Path(config['site_dir'] + time_avg +'_debug.txt'), 'a') as f:
+            print(error, file=f)
         pass
     # Additive biascorrected cru and observations 
     try:
@@ -2281,7 +2285,9 @@ def plot_site_graphs(input_list):
         leg_text = ['CRUJRA abc', 'Observations']
         graph_time(ds_cru_abc, ds_obs, config['year_start'], config['year_end'], x_lab, title, title_size, config['site_dir'], bias, scatter, \
                 time_scale, cru_color, obs_color, leg_text, leg_loc, text_size, plot_dpi, '_abc') 
-    except:
+    except Exception as error:
+        with open(Path(config['site_dir'] + time_avg +'_debug.txt'), 'a') as f:
+            print(error, file=f)
         pass
     # Multiplicative biascorrected cru and observations 
     try:
@@ -2289,7 +2295,9 @@ def plot_site_graphs(input_list):
         leg_text = ['CRUJRA mbc', 'Observations']
         graph_time(ds_cru_mbc, ds_obs, config['year_start'], config['year_end'], x_lab, title, title_size, config['site_dir'], bias, scatter, \
                 time_scale, cru_color, obs_color, leg_text, leg_loc, text_size, plot_dpi, '_mbc') 
-    except:
+    except Exception as error:
+        with open(Path(config['site_dir'] + time_avg +'_debug.txt'), 'a') as f:
+            print(error, file=f)
         pass
     ###### climate trend graphs
     try:
@@ -2364,7 +2372,7 @@ def plot_site_graphs(input_list):
         obs_dict = dict(zip(original_data_vars, new_obs_vars))
         # subset dict to only variables that exist in observations to rename
         obs_dict = {k: obs_dict[k] for k in ds_obs_org2.data_vars}
-        with open(Path(config['site_dir'] + time_avg +'_debug.txt'), 'w') as f:
+        with open(Path(config['site_dir'] + time_avg +'_debug.txt'), 'a') as f:
             print(obs_dict, file=f)
         # rename datasets for combination
         ds_obs_org2 = ds_obs_org2.rename(obs_dict)

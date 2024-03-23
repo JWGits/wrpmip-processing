@@ -79,7 +79,7 @@
 				"/projects/warpmip/shared/forcing_data/biascorrected_forcing/SVA-Adventdalen/sn99870_adventdalen_2021_12.csv"
 			], 	
 			"skip_rows": null,
-			"freq": "H",
+			"freq": "h",
 			"sep": ",",
 			"datetime_format": "%Y-%m-%d %H:%M:%S",
 			"datetime_cols": ["referenceTime"],
@@ -167,7 +167,7 @@
 				"/projects/warpmip/shared/forcing_data/biascorrected_forcing/SVA-Adventdalen/sn99840_lufthaven_2021_12.csv"
 			], 	
 			"skip_rows": null,
-			"freq": "H",
+			"freq": "h",
 			"sep": ",",
 			"datetime_format": "%Y-%m-%d %H:%M:%S",
 			"datetime_cols": ["referenceTime"],
@@ -208,7 +208,7 @@
 				"/projects/warpmip/shared/forcing_data/biascorrected_forcing/SVA-Adventdalen/sn99874_janssonhaugen_2021_12.csv"
 			], 	
 			"skip_rows": null,
-			"freq": "H",
+			"freq": "h",
 			"sep": ",",
 			"datetime_format": "%Y-%m-%d %H:%M:%S",
 			"datetime_cols": ["referenceTime"],

@@ -41,7 +41,7 @@
 				"/projects/warpmip/shared/forcing_data/biascorrected_forcing/USA-Atqasuk/2021_ITEX_Barrow_Atqasuk_Climate_v1.csv"
 			], 	
 			"skip_rows": 0,
-			"freq": "H",
+			"freq": "h",
 			"sep": ",",
 			"datetime_format": "%Y%m%d%H",
 			"datetime_cols": ["strAlaska"],
