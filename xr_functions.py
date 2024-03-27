@@ -1838,16 +1838,111 @@ def replace_clm_14site_climate(input_list):
         # define OTC and SF experimental start dates at each site
         otc_start = [2008,2015,1994,1996,2005,2011,2012,2013,2007,2017,2012,2003,2002,1994]
         sf_start = [2008,2015,1994,1996,2005,2011,2017,2012,2007,2017,2012,2003,2002,1994]
-        # create copy of original ds
-        ds_otc = ds.copy(deep=True)
-        ds_sf = ds.copy(deep=True)
+        # create copy of original ds to make final adjustments
+        ds_adj = ds.copy(deep=True)
+        # replace Svalbard zbedrock,ORGANIC values with Zackenburg as next closest site
+        ds_adj['zbedrock'].loc[11] = ds_adj['zbedrock'][8]
+        ds_adj['zbedrock'].loc[12] = ds_adj['zbedrock'][8]
+        ds_adj['ORGANIC'].loc[:,11] = ds_adj['ORGANIC'][:,8]
+        ds_adj['ORGANIC'].loc[:,12] = ds_adj['ORGANIC'][:,8]
+        # change all natveg percentages to 100%, and other patch percentages to zero
+        ds_adj['PCT_NATVEG'].values = [100.0] * 14
+        ds_adj['PCT_CROP'].values =     [0.0] * 14
+        ds_adj['PCT_GLACIER'].values =  [0.0] * 14
+        ds_adj['PCT_LAKE'].values =     [0.0] * 14
+        ds_adj['PCT_URBAN'].values =   [[0.0] * 14] * 3 
+        ds_adj['PCT_WETLAND'].values =  [0.0] * 14
+        # remove all trees from PFTs
+        ds_adj['PCT_NAT_PFT'].loc[1:8,:] = 0.0
+        # adjust individual sites to have more realistic pfts, especially dominant species
+        # bare ground to zero based on observational data generally collected from vegetated collars
+        # PFTs split only into evergreen shrub(bes), deciduous shrub(bds), and arctic grass (c3ag)
+        for grid in range(0,14):
+            # get current grids list of PFT percentages
+            pfts = ds_adj['PCT_NAT_PFT'][:,grid]
+            # replace all pfts with zero
+            pfts.loc[0:14] = 0.0
+            # do specific things for each site based on reduced site info
+            match grid:
+                case 0: # USA-EightMileLake
+                     pfts.loc[[9,11,12]] = [35.0,35.0,30.0]
+                case 1: # USA-Toolik
+                     pfts.loc[[9,11,12]] = [35.0,35.0,30.0]
+                case 2: # USA-Utqiagvik
+                     pfts.loc[[9,11,12]] = [20.0,50.0,30.0]
+                case 3: # USA-Atqasuk
+                     pfts.loc[[9,11,12]] = [50.0,20.0,30.0]
+                case 4: # CAN-DaringLake
+                     pfts.loc[[9,11,12]] = [50.0,20.0,30.0]
+                case 5: # CAN-WanderingRiver
+                     pfts.loc[[9,11,12]] = [35.0,35.0,30.0]
+                case 6: # CAN-CambridgeBay
+                     pfts.loc[[9,11,12]] = [35.0,35.0,30.0]
+                case 7: # GRE-Disko
+                     pfts.loc[[9,11,12]] = [27.0,55.0,18.0]
+                case 8: # GRE-Zackenburg
+                     pfts.loc[[9,11,12]] = [35.0,35.0,30.0]
+                case 9: # NOR-Iskoras
+                     pfts.loc[[9,11,12]] = [35.0,35.0,30.0]
+                case 10: # RUS-Seida
+                     pfts.loc[[9,11,12]] = [15.0,70.0,15.0]
+                case 11: # SVA-Adventdalen
+                     pfts.loc[[9,11,12]] = [50.0,20.0,30.0]
+                case 12: # SVA-Endalen
+                     pfts.loc[[9,11,12]] = [50.0,20.0,30.0]
+                case 13: # SWE-Abisko
+                     pfts.loc[[9,11,12]] = [35.0,35.0,30.0]
+            # assign manipulated PFT values back to grid
+            ds_adj['PCT_NAT_PFT'].loc[:,grid] = pfts
+        # create OTC and SF surface files from adjusted file
+        ds_otc = ds_adj.copy(deep=True)
+        ds_sf = ds_adj.copy(deep=True)
         # copy dataset that has correct dims into warming_onset var, replace values
         ds_otc['warming_onset'] = ds_otc['LONGXY']
         ds_otc['warming_onset'].values = otc_start
+        ds_otc['warming_onset'] = ds_otc['warming_onset'].assign_attrs(
+            units='year', description='Year of experimental warming onset for OTCs')
         ds_sf['warming_onset'] = ds_sf['LONGXY']
         ds_sf['warming_onset'].values = sf_start
+        ds_sf['warming_onset'] = ds_sf['warming_onset'].assign_attrs(
+            units='year', description='Year of experimental warming onset for SFs')
         # check surf data addition
         with open(Path(config['new_dir']+'/siteclimate_debug.txt'), 'a') as f:
+            print('PCT_CROP:\n', file=f)
+            print(ds_adj['PCT_CROP'], file=f)
+            print('PCT_GLACIER:\n', file=f)
+            print(ds_adj['PCT_GLACIER'], file=f)
+            print('PCT_LAKE:\n', file=f)
+            print(ds_adj['PCT_LAKE'], file=f)
+            print('PCT_URBAN:\n', file=f)
+            print(ds_adj['PCT_URBAN'], file=f)
+            print('PCT_WETLAND:\n', file=f)
+            print(ds_adj['PCT_WETLAND'], file=f)
+            print('SAND percent:\n', file=f)
+            print(ds_adj['PCT_SAND'], file=f)
+            print('CLAY percent:\n', file=f)
+            print(ds_adj['PCT_CLAY'], file=f)
+            print('ORGANIC percent:\n', file=f)
+            print(ds_adj['ORGANIC'], file=f)
+            print('PCT_NATVEG variable:\n', file=f)
+            print(ds_adj['PCT_NATVEG'], file=f)
+            print('PCT_NAT_PFT variable:\n', file=f)
+            print(ds_adj['PCT_NAT_PFT'], file=f)
+            for i in range(1,15):
+                grid_index = i - 1
+                pfts = ds_adj['PCT_NAT_PFT'][:,grid_index]
+                print('\nGrid ' + str(i) + ':', file=f)
+                print(pfts, file=f)
+                print('Total percent: ' + str(sum(pfts)), file=f)
+            print('GRE-Zackenburg zbedrock/ORGANIC:\n', file=f)
+            print(ds_adj['zbedrock'][8], file=f)
+            print(ds_adj['ORGANIC'][:,8], file=f)
+            print('SVA-Adventdalen zbedrock/ORGANIC:\n', file=f)
+            print(ds_adj['zbedrock'][11], file=f)
+            print(ds_adj['ORGANIC'][:,11], file=f)
+            print('SVA-Endalen zbedrock/ORGANIC:\n', file=f)
+            print(ds_adj['zbedrock'][12], file=f)
+            print(ds_adj['ORGANIC'][:,12], file=f)
             print('updated surface data - OTC:\n', file=f)
             print(ds_otc, file=f)
             print('warming_onset variable - OTC:\n', file=f)
@@ -1857,11 +1952,17 @@ def replace_clm_14site_climate(input_list):
             print('warming_onset variable - SF:\n', file=f)
             print(ds_sf['warming_onset'], file=f)
         # output OTC/SF surfdata
+        adj_fname = str(surf_file.parent) + '/' + str(surf_file.stem) + '_update.nc'
         otc_fname = str(surf_file.parent) + '/' + str(surf_file.stem) + '_otc.nc'
         sf_fname = str(surf_file.parent) + '/' + str(surf_file.stem) + '_sf.nc'
         ## set netcdf write characteristics for xarray.to_netcdf()
         comp = dict(zlib=config['nc_write']['zlib'], shuffle=config['nc_write']['shuffle'],\
                 complevel=config['nc_write']['complevel'],_FillValue=None) #config['nc_write']['fillvalue'])
+        # set encoding output otc file
+        encoding = {var: comp for var in ds_adj.data_vars}
+        ds_adj.to_netcdf(adj_fname, mode="w", encoding=encoding, \
+                format=config['nc_write']['format'], \
+                engine=config['nc_write']['engine'])
         # set encoding output otc file
         encoding = {var: comp for var in ds_otc.data_vars}
         ds_otc.to_netcdf(otc_fname, mode="w", encoding=encoding, \
@@ -1875,7 +1976,6 @@ def replace_clm_14site_climate(input_list):
     except Exception as error:
         with open(Path(config['new_dir']+'/siteclimate_debug.txt'), 'a') as f:
             print(error, file=f)
-            print('wtf', file=f)
     # open biascorrected climate dataset file
     with xr.open_dataset(bc_file, engine=config['nc_read']['engine'], decode_cf=True, use_cftime=True) as ds_tmp:
         ds = ds_tmp.load()
@@ -3476,14 +3576,15 @@ def aggregate_models_warming(f):
     with open(Path(config['output_dir'] + '/combined/2000-2021_debug.txt'), 'a') as pf:
         print(ds_sites, file=pf)
     # write zarr
-    out_file = config['output_dir'] + 'combined/WrPMIP_all_models_sites_2000-2021.zarr'
+    out_file_zarr = config['output_dir'] + 'combined/WrPMIP_all_models_sites_2000-2021.zarr'
     #ds_sites.chunk({'time': -1}).to_zarr(out_file, mode="w")
-    ds_sites.to_zarr(out_file, mode="w")
+    ds_sites.to_zarr(out_file_zarr, mode="w")
     # also output aggregate netcdf as well
     comp = dict(zlib=True, shuffle=False,\
             complevel=0,_FillValue=None) #config['nc_write']['fillvalue'])
     encoding = {var: comp for var in ds_sites.data_vars}
-    ds_sites.to_netcdf(prec_file_out, mode="w", encoding=encoding, \
+    out_file_nc = config['output_dir'] + 'combined/WrPMIP_all_models_sites_2000-2021.nc'
+    ds_sites.to_netcdf(out_file_nc, mode="w", encoding=encoding, \
             format='NETCDF4_CLASSIC', \
             engine='netcdf4')
     
@@ -3536,123 +3637,136 @@ def plot_dir_prep(f, config_file):
 
 # line plots using plotnine
 def plotnine_lines(f, config, out_dir):
-    # bring in and select data similarly as graph_lines
-    # read in inputs
-    sites = f[0]
-    var = f[1]
-    models = f[2]
-    sims = f[3]
-    plot_num = f[4]
-    # set file read location from merged daily data
-    combined_file = config['output_dir'] + 'combined/WrPMIP_all_models_sites_2000-2021.zarr'
-    ds = xr.open_zarr(combined_file, use_cftime=True, mask_and_scale=True)
-    # function to subset only summer months
-    def is_summer(month):
-        return (month >= 5) & (month <= 9)
-    # check maximum Total Respiration value for plots
-   # ds_mean = ds[var].sel(time=is_summer(ds[var].time.dt.month)).resample(time='A').mean('time')
-   # annual_var_max = np.unique(ds_mean.max().values).max()
-   # annual_var_min = np.unique(ds_mean.min().values).min()
-   # daily_var_max = np.unique(ds[var].max().values).max()
-   # daily_var_min = np.unique(ds[var].min().values).min()
-    # subsample data
-    da = ds[var].sel(site=sites, model=models, sim=sims, time=slice('2000-01-01','2020-12-31'))
-    # deal with variable site/model/sims and variable depth increments
-    listed = False
-    groups = 'site'
-    other_vars = ['sim', 'model']
-    if isinstance(var, str) & isinstance(models, str) & isinstance(sites, str) & isinstance(sims, str):
-        file_name = var + '_by_time_' + models + '_' + sites[:7] + '_' + sims
-    if isinstance(sites, list):
-        sites_chopped = []
-        for i in sites:
-            sites_chopped.append(i[:7]) 
-        file_part = models + '_' + '_'.join(sites_chopped) + '_' + sims 
-        listed = True
+    try:
+        # bring in and select data similarly as graph_lines
+        # read in inputs
+        sites = f[0]
+        var = f[1]
+        models = f[2]
+        sims = f[3]
+        plot_num = f[4]
+        # set file read location from merged daily data
+        combined_file = config['output_dir'] + 'combined/WrPMIP_all_models_sites_2000-2021.zarr'
+        ds = xr.open_zarr(combined_file, use_cftime=True, mask_and_scale=True)
+        # function to subset only summer months
+        def is_summer(month):
+            return (month >= 5) & (month <= 9)
+        # check maximum Total Respiration value for plots
+        #     ds_mean = ds[var].sel(time=is_summer(ds[var].time.dt.month)).resample(time='A').mean('time')
+        #     annual_var_max = np.unique(ds_mean.max().values).max()
+        #     annual_var_min = np.unique(ds_mean.min().values).min()
+        #     daily_var_max = np.unique(ds[var].max().values).max()
+        #     daily_var_min = np.unique(ds[var].min().values).min()
+        # subsample data
+        da = ds[var].sel(site=sites, model=models, sim=sims, time=slice('2000-01-01','2020-12-31'))
+        # deal with variable site/model/sims and variable depth increments
+        listed = False
         groups = 'site'
-        other_vars = ['model', 'sim']
-    if isinstance(models, list):
-        file_part = '_'.join(models) + '_' + sites[:7] + '_' + sims
-        listed = True
-        groups = 'model'
-        other_vars = ['sim', 'site']
-    if isinstance(sims, list):
-        file_part = models + '_' + sites[:7] + '_' + '_'.join(sims)
-        listed = True
-        groups = 'sim'
-        other_vars = ['model', 'site']
-    # create file name if any lists present
-    if listed == True:
-        file_name = var + '_by_time_' + file_part
-    # manipulate data for ggplot input format
-    # daily data
-    pd_df = da.to_dataframe()
-    pd_df = pd_df.reset_index()
-    pd_df['ID'] =  pd_df[groups].astype(str).str.cat(pd_df[other_vars].astype(str), sep='_')
-    pd_df = pd_df.set_index('ID', drop=False)
-    pd_df[var].replace([np.inf, -np.inf], np.nan, inplace=True)
-    pd_df = pd_df.dropna()
-    # annulize for second plot
-    da = da.sel(time=is_summer(da['time.month'])) 
-    ds_annual = da.resample(time='AS').sum('time')
-    # annudal data
-    pd_df_annual = ds_annual.to_dataframe()
-    pd_df_annual = pd_df_annual.reset_index()
-    pd_df_annual['ID'] =  pd_df_annual[groups].astype(str).str.cat(pd_df_annual[other_vars].astype(str), sep='_')
-    pd_df_annual = pd_df_annual.set_index('ID', drop=False)
-    pd_df_annual[var].replace([np.inf, -np.inf], np.nan, inplace=True)
-    pd_df_annual = pd_df_annual.dropna()
-    # output csv to inspect
-    pd_df.to_csv(config['output_dir'] + 'combined/' + out_dir + '/' + file_name + '.csv')
-    pd_df_annual.to_csv(config['output_dir'] + 'combined/' + out_dir + '/' + file_name + '_annual.csv')
-    # custome color map
-    plot_colors = ['blue','gold','red','olive','purple','orange','green','cyan','magenta','brown','gray','black']
-    # create color column for consistent colors on plots
+        other_vars = ['sim', 'model']
+        if isinstance(var, str) & isinstance(models, str) & isinstance(sites, str) & isinstance(sims, str):
+            file_name = var + '_by_time_' + models + '_' + sites[:7] + '_' + sims
+        if isinstance(sites, list):
+            sites_chopped = []
+            for i in sites:
+                sites_chopped.append(i[:7]) 
+            file_part = models + '_' + '_'.join(sites_chopped) + '_' + sims 
+            listed = True
+            groups = 'site'
+            other_vars = ['model', 'sim']
+        if isinstance(models, list):
+            file_part = '_'.join(models) + '_' + sites[:7] + '_' + sims
+            listed = True
+            groups = 'model'
+            other_vars = ['sim', 'site']
+        if isinstance(sims, list):
+            file_part = models + '_' + sites[:7] + '_' + '_'.join(sims)
+            listed = True
+            groups = 'sim'
+            other_vars = ['model', 'site']
+        # create file name if any lists present
+        if listed == True:
+            file_name = var + '_by_time_' + file_part
+        # manipulate data for ggplot input format
+        # daily data
+        pd_df = da.to_dataframe()
+        pd_df = pd_df.reset_index()
+        pd_df['ID'] =  pd_df[groups].astype(str).str.cat(pd_df[other_vars].astype(str), sep='_')
+        pd_df = pd_df.set_index('ID', drop=False)
+        pd_df[var].replace([np.inf, -np.inf], np.nan, inplace=True)
+        pd_df = pd_df.dropna()
+        # annulize for second plot
+        da = da.sel(time=is_summer(da['time.month'])) 
+        ds_annual = da.resample(time='AS').sum('time')
+        # annudal data
+        pd_df_annual = ds_annual.to_dataframe()
+        pd_df_annual = pd_df_annual.reset_index()
+        pd_df_annual['ID'] =  pd_df_annual[groups].astype(str).str.cat(pd_df_annual[other_vars].astype(str), sep='_')
+        pd_df_annual = pd_df_annual.set_index('ID', drop=False)
+        pd_df_annual[var].replace([np.inf, -np.inf], np.nan, inplace=True)
+        pd_df_annual = pd_df_annual.dropna()
+        # output csv to inspect
+        pd_df.to_csv(config['output_dir'] + 'combined/' + out_dir + '/' + file_name + '.csv')
+        pd_df_annual.to_csv(config['output_dir'] + 'combined/' + out_dir + '/' + file_name + '_annual.csv')
+        # custome color map
+        plot_colors = ['blue','gold','red','olive','purple','orange','green','cyan','magenta','brown','gray','black']
+        # create color column for consistent colors on plots
 
-    # create axis labels
-    if var == 'TotalResp':
-        x_label = r'time (day)'
-        y_label = r'Summer Ecosystem Respiration (g C $m^{-2}$ $day^{-1}$)'
-    elif var == 'q10':
-        x_label = r'time (day)'
-        y_label = r'q10 (unitless)'
-    # plotnine graph daily
-    p = ggplot(pd_df, aes(x='time', y=var, group='ID', color='ID')) + \
-        labs(x=x_label, y=y_label) + \
-        geom_line() + \
-        scale_x_datetime(breaks=date_breaks('5 years'), labels=date_format('%Y')) + \
-        scale_color_manual(plot_colors) + \
-        guides(color = guide_legend(reverse=True)) + \
-        theme_bw() + \
-        theme(
-            axis_text_x = element_text(angle = 90),
-            axis_line = element_line(colour = "black"),
-            panel_grid_major = element_blank(),
-            panel_grid_minor = element_blank(),
-            panel_border = element_blank(),
-            panel_background = element_blank()
-        )
-        #scale_y_continuous(limits=(daily_var_min,daily_var_max)) + \
-    # plotnine graph annual
-    p2 = ggplot(pd_df_annual, aes(x='time', y=var, group='ID', color='ID')) + \
-        labs(x=x_label, y=y_label) + \
-        geom_line() + \
-        scale_x_datetime(breaks=date_breaks('5 years'), labels=date_format('%Y')) + \
-        scale_color_manual(plot_colors) + \
-        guides(color = guide_legend(reverse=True)) + \
-        theme_bw() + \
-        theme(
-            axis_text_x = element_text(angle = 90),
-            axis_line = element_line(colour = "black"),
-            panel_grid_major = element_blank(),
-            panel_grid_minor = element_blank(),
-            panel_border = element_blank(),
-            panel_background = element_blank()
-        )
-        #scale_y_continuous(limits=(annual_var_min,annual_var_max)) + \
-    # output graph
-    p.save(filename=file_name+'.png', path=config['output_dir']+'combined/'+out_dir, dpi=300)
-    p2.save(filename=file_name+'_annual.png', path=config['output_dir']+'combined/'+out_dir, dpi=300)
+        pd_df['ID'] = pd_df['ID'].astype('category')
+        pd_df_annual['ID'] = pd_df_annual['ID'].astype('category')
+        # create axis labels
+        if var == 'TotalResp':
+            x_label = r'time (day)'
+            y_label = r'Summer Ecosystem Respiration (g C $m^{-2}$ $day^{-1}$)'
+        elif var == 'q10':
+            x_label = r'time (day)'
+            y_label = r'q10 (unitless)'
+        with open(Path(config['output_dir'] + 'combined/line_debug.txt'), 'w') as pf:
+            with pd.option_context('display.max_columns', None):
+                print('daily data:', file=pf)
+                print(pd_df.dtypes, file=pf)
+                print(pd_df, file=pf)
+                print('scaled monthly data subset:', file=pf)
+                print(pd_df_annual.dtypes, file=pf)
+                print(pd_df_annual, file=pf)
+        # plotnine graph daily
+        p = ggplot(pd_df, aes(x='time', y=var, group='ID', color='ID')) + \
+            labs(x=x_label, y=y_label) + \
+            geom_line() + \
+            guides(color = guide_legend(reverse=True)) + \
+            theme_bw() + \
+            theme(
+                axis_text_x = element_text(angle = 90),
+                axis_line = element_line(colour = "black"),
+                panel_grid_major = element_blank(),
+                panel_grid_minor = element_blank(),
+                panel_border = element_blank(),
+                panel_background = element_blank()
+            )
+            #scale_y_continuous(limits=(daily_var_min,daily_var_max)) + \
+        # plotnine graph annual
+        p2 = ggplot(pd_df_annual, aes(x='time', y=var, group='ID', color='ID')) + \
+            labs(x=x_label, y=y_label) + \
+            geom_line() + \
+            guides(color = guide_legend(reverse=True)) + \
+            theme_bw() + \
+            theme(
+                axis_text_x = element_text(angle = 90),
+                axis_line = element_line(colour = "black"),
+                panel_grid_major = element_blank(),
+                panel_grid_minor = element_blank(),
+                panel_border = element_blank(),
+                panel_background = element_blank()
+            )
+            #scale_x_datetime(breaks=date_breaks('5 years'), labels=date_format('%Y')) + \
+            #scale_y_continuous(limits=(annual_var_min,annual_var_max)) + \
+            #scale_color_manual(plot_colors) + \
+        # output graph
+        p.save(filename=file_name+'.png', path=config['output_dir']+'combined/'+out_dir, dpi=300)
+        p2.save(filename=file_name+'_annual.png', path=config['output_dir']+'combined/'+out_dir, dpi=300)
+    except Exception as error:
+        with open(Path(config['output_dir'] + 'combined/line_debug.txt'), 'w') as pf:
+            print(error, file=pf)
+        
 
 # line plots using plotnine
 def plotnine_scatter(f, config, out_dir):
