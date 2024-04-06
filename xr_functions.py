@@ -23,6 +23,9 @@ from reportlab.pdfgen import canvas
 from matplotlib import pyplot as plt
 import matplotlib.cm as cm
 import matplotlib as matplotlib
+import matplotlib.path as mpath
+import cartopy.crs as ccrs
+import cartopy
 import docx
 import textwrap
 import dask.config
@@ -427,7 +430,7 @@ def copy_gunzip(f, config):
     with gzip.open(tmp_file, 'rb') as f_in:
         with open(unzip_file, 'wb') as f_out:
             shutil.copyfileobj(f_in, f_out)
-    with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
+    with open(Path(config['site_dir'] + 'debug_gzip.txt'), 'a') as f:
         for line in file_info:
             f.write(line + '\n')
 
@@ -490,7 +493,7 @@ def full_reanalysis_list(config_file):
     # remake directory for subset files
     Path(config['site_dir']+"sub/").mkdir(parents=True, exist_ok=True)
     # debug print the config file info
-    with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
+    with open(Path(config['site_dir'] + 'debug_filelist.txt'), 'a') as f:
         for line in config:
             f.write(line + ': ' + str(config[line]) + '\n')
     # read all CRUJRA input file names from reanalysis directory
@@ -688,7 +691,7 @@ def combine_site_observations(config_file):
     except:
         # if no data files listed end function
         print_string = 'No observation data; combine_site_observations() skipped for ' + config['site_name']
-        with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
+        with open(Path(config['site_dir'] + 'debug_obs.txt'), 'a') as f:
             print(print_string)
         return 
     # enforce column order from subset procedure from usecols in read_csv
@@ -699,7 +702,7 @@ def combine_site_observations(config_file):
     obs_data = obs_data.dropna(subset=config['obs']['f1']['datetime_cols'])
     # print statement code to use when testing/adding new sites 
     with option_context('display.max_rows', 10, 'display.max_columns', 10):
-        with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
+        with open(Path(config['site_dir'] + 'debug_obs.txt'), 'a') as f:
             print(obs_data.head(), file=f)
             print(obs_data.dtypes, file=f)
     # handle site specific idiosyncrasies
@@ -722,7 +725,7 @@ def combine_site_observations(config_file):
             obs_data.loc[obs_data['RH'] > 100, 'RH'] = 100
             obs_data.loc[:,'QBOT'] = specific_humidity(obs_data['RH'], obs_data['TBOT'], obs_data['PBOT'])
             obs_data = obs_data.drop(columns=['RH'])
-            with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
+            with open(Path(config['site_dir'] + 'debug_obs.txt'), 'a') as f:
                 print(obs_data, file=f)
         case 'USA-Toolik':
             # fix hourly timestep - cannot have 24 as hour value, only 0:23 for datetime.strptime
@@ -731,7 +734,7 @@ def combine_site_observations(config_file):
             # combine date and hour columns for timestamp -  need to pad hours with preceeding zeros
             obs_data['time'] = obs_data['date'].astype(str) + " " + obs_data['hour'].astype(str).str.zfill(4)
             with option_context('display.max_rows', 10, 'display.max_columns', 10):
-                with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
+                with open(Path(config['site_dir'] + 'debug_obs.txt'), 'a') as f:
                     print(obs_data.head(), file=f)
                     print(obs_data.dtypes, file=f)
             # convert TBOT from celsius to kelvin
@@ -746,7 +749,7 @@ def combine_site_observations(config_file):
             obs_data = obs_data.drop(columns=['RH'])
             # precip
             obs_data['PRECIP'] = obs_data['PRECIP']/3600
-            with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
+            with open(Path(config['site_dir'] + 'debug_obs.txt'), 'a') as f:
                 print(obs_data, file=f)
         case 'SWE-Abisko':
             # abiskos data is very messy and has all kinds of non-numeric character strings which confuses python
@@ -776,7 +779,7 @@ def combine_site_observations(config_file):
             obs_data = obs_data.drop(columns=['RH'])
             # precip
             obs_data['PRECIP'] = obs_data['PRECIP']/3600
-            with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
+            with open(Path(config['site_dir'] + 'debug_obs.txt'), 'a') as f:
                 print(obs_data, file=f)
                 print(obs_data.dtypes, file=f)
         case 'RUS-Seida':
@@ -803,7 +806,7 @@ def combine_site_observations(config_file):
             # convert rh to sh
             #obs_data.loc[:,'QBOT'] = specific_humidity(obs_data['RH'], obs_data['TBOT'], obs_data['PBOT'])
             obs_data = obs_data.drop(columns=['RH','WIND'])
-            with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
+            with open(Path(config['site_dir'] + 'debug_obs.txt'), 'a') as f:
                 print(obs_data, file=f)
             # pressure, windspeed seem to be in same units as clm reprocessed crujra
         case 'CAN-DaringLake':
@@ -843,12 +846,12 @@ def combine_site_observations(config_file):
             #obs_data['PRECIP'] = obs_data['PRECIP']/3600
             # remove uneeded columns
             obs_data = obs_data.drop(columns=['RH','PRECIP'])
-            with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
+            with open(Path(config['site_dir'] + 'debug_obs.txt'), 'a') as f:
                 print(obs_data, file=f)
         case 'USA-Utqiagvik':
             # subset to BD for Barrow in strSitCom
             obs_data = obs_data.loc[obs_data['SITE'] == 'BD']
-            with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
+            with open(Path(config['site_dir'] + 'debug_obs.txt'), 'a') as f:
                 print(obs_data, file=f)
             # read other files and concat to first
             for extra_file in config['obs']['f1']['extended_files']:
@@ -881,12 +884,12 @@ def combine_site_observations(config_file):
             # calculate SWIN from PAR
             #obs_data.loc[:,'FSDS'] = obs_data['PAR']/2.1#4.57)/0.46
             obs_data = obs_data.drop(columns = ['PAR','PRECIP'])
-            with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
+            with open(Path(config['site_dir'] + 'debug_obs.txt'), 'a') as f:
                 print(obs_data, file=f)
         case 'USA-Atqasuk':
             # subset to BD for Barrow in strSitCom
             obs_data = obs_data.loc[obs_data['SITE'] == 'AD']
-            with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
+            with open(Path(config['site_dir'] + 'debug_obs.txt'), 'a') as f:
                 print(obs_data, file=f)
             # read other files and concat to first
             for extra_file in config['obs']['f1']['extended_files']:
@@ -920,7 +923,7 @@ def combine_site_observations(config_file):
             # calculate SWIN from PAR
             #obs_data.loc[:,'FSDS'] = obs_data['PAR']/2.1#4.57)/0.46
             obs_data = obs_data.drop(columns = ['PAR','PRECIP','WIND'])
-            with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
+            with open(Path(config['site_dir'] + 'debug_obs.txt'), 'a') as f:
                 print(obs_data, file=f)
         case 'CAN-CambridgeBay':
             # read other files and concat to first
@@ -954,7 +957,7 @@ def combine_site_observations(config_file):
             obs_data = obs_data.drop(columns=['RH'])
             # precip
             obs_data['PRECIP'] = obs_data['PRECIP']/3600
-            with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
+            with open(Path(config['site_dir'] + 'debug_obs.txt'), 'a') as f:
                 print(obs_data, file=f)
         case 'SVA-Adventdalen':
             # read other files and concat to first
@@ -973,7 +976,7 @@ def combine_site_observations(config_file):
                 obs_data_f1e = obs_data_f1e.dropna(subset=config['obs']['f1']['datetime_cols'])
                 # concat file
                 obs_data = pd.concat([obs_data, obs_data_f1e], ignore_index=True)
-            with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
+            with open(Path(config['site_dir'] + 'debug_obs.txt'), 'a') as f:
                 print('file 1 done', file=f)
                 print(obs_data, file=f)
                 print(obs_data.dtypes, file=f)
@@ -997,7 +1000,7 @@ def combine_site_observations(config_file):
                 obs_data_f2e = obs_data_f2e.dropna(subset=config['obs']['f2']['datetime_cols'])
                 # concat file
                 obs_data_f2 = pd.concat([obs_data_f2, obs_data_f2e], ignore_index=True)
-            with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
+            with open(Path(config['site_dir'] + 'debug_obs.txt'), 'a') as f:
                 print('file 2 done', file=f)
                 print(obs_data_f2, file=f)
                 print(obs_data_f2.dtypes, file=f)
@@ -1021,7 +1024,7 @@ def combine_site_observations(config_file):
                 obs_data_f3e = obs_data_f3e.dropna(subset=config['obs']['f3']['datetime_cols'])
                 # concat file
                 obs_data_f3 = pd.concat([obs_data_f3, obs_data_f3e], ignore_index=True)
-            with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
+            with open(Path(config['site_dir'] + 'debug_obs.txt'), 'a') as f:
                 print('file 3 done', file=f)
                 print(obs_data_f3, file=f)
                 print(obs_data_f3.dtypes, file=f)
@@ -1038,7 +1041,7 @@ def combine_site_observations(config_file):
             obs_data = pd.merge(obs_data, obs_data_f3, on='time', how='outer')
             # sort dates after merge to restore timeseries order
             obs_data = obs_data.sort_values(by='time')
-            with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
+            with open(Path(config['site_dir'] + 'debug_obs.txt'), 'a') as f:
                 print('files merged', file=f)
                 print(obs_data, file=f)
                 print(obs_data.dtypes, file=f)
@@ -1058,7 +1061,7 @@ def combine_site_observations(config_file):
             obs_data['PRECIP'] = obs_data['PRECIP']/3600
             # remove uneeded columns
             obs_data = obs_data.drop(columns=['RH'])
-            with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
+            with open(Path(config['site_dir'] + 'debug_obs.txt'), 'a') as f:
                 print('data adjusted', file=f)
                 print(obs_data, file=f)
                 print(obs_data.head(), file=f)
@@ -1080,7 +1083,7 @@ def combine_site_observations(config_file):
                 obs_data_f1e = obs_data_f1e.dropna(subset=config['obs']['f1']['datetime_cols'])
                 # concat file
                 obs_data = pd.concat([obs_data, obs_data_f1e], ignore_index=True)
-            with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
+            with open(Path(config['site_dir'] + 'debug_obs.txt'), 'a') as f:
                 print('file 1 done', file=f)
                 print(obs_data, file=f)
                 print(obs_data.dtypes, file=f)
@@ -1104,7 +1107,7 @@ def combine_site_observations(config_file):
                 obs_data_f2e = obs_data_f2e.dropna(subset=config['obs']['f2']['datetime_cols'])
                 # concat file
                 obs_data_f2 = pd.concat([obs_data_f2, obs_data_f2e], ignore_index=True)
-            with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
+            with open(Path(config['site_dir'] + 'debug_obs.txt'), 'a') as f:
                 print('file 2 done', file=f)
                 print(obs_data_f2, file=f)
                 print(obs_data_f2.dtypes, file=f)
@@ -1118,7 +1121,7 @@ def combine_site_observations(config_file):
             obs_data = pd.merge(obs_data, obs_data_f2, on='time', how='outer')
             # sort dates after merge to restore timeseries order
             obs_data = obs_data.sort_values(by='time')
-            with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
+            with open(Path(config['site_dir'] + 'debug_obs.txt'), 'a') as f:
                 print('files merged', file=f)
                 print(obs_data, file=f)
                 print(obs_data.dtypes, file=f)
@@ -1141,7 +1144,7 @@ def combine_site_observations(config_file):
             # replace odd data on first rows of observation data with nan
             obs_data.loc[obs_data['FLDS'] < 100, 'FLDS'] = np.nan
             obs_data.loc[obs_data['FLDS'] > 400, 'FLDS'] = np.nan
-            with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
+            with open(Path(config['site_dir'] + 'debug_obs.txt'), 'a') as f:
                 print('data adjusted', file=f)
                 print(obs_data, file=f)
                 print(obs_data.head(), file=f)
@@ -1157,7 +1160,7 @@ def combine_site_observations(config_file):
             f2 = f2.rename(columns=config['obs']['f2']['cols_new'])
             # remove rows with no date/time of measurement
             f2 = f2.dropna(subset=config['obs']['f2']['datetime_cols'])
-            with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
+            with open(Path(config['site_dir'] + 'debug_obs.txt'), 'a') as f:
                 print('f2 read in', file=f)
                 print(f2, file=f)
                 print(obs_data.dtypes, file=f)
@@ -1266,14 +1269,14 @@ def combine_site_observations(config_file):
             obs_data['PRECIP'] = obs_data['PRECIP']/3600
             # remove uneeded columns
             obs_data = obs_data.drop(columns=['RH'])
-            with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
+            with open(Path(config['site_dir'] + 'debug_obs.txt'), 'a') as f:
                 print('data adjusted', file=f)
                 print(obs_data, file=f)
                 print(obs_data.head(), file=f)
                 print(obs_data.dtypes, file=f)
         case 'GRE-Disko':
             ##### read in air temp
-            with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
+            with open(Path(config['site_dir'] + 'debug_obs.txt'), 'a') as f:
                 print(config['obs']['f2']['name'], file=f)
             f2 = pd.read_csv(config['obs']['f2']['name'], sep=config['obs']['f2']['sep'], \
                 index_col=False, engine='python', skiprows=config['obs']['f2']['skip_rows'], \
@@ -1284,7 +1287,7 @@ def combine_site_observations(config_file):
             f2 = f2.rename(columns=config['obs']['f2']['cols_new'])
             # remove rows with no date/time of measurement
             f2 = f2.dropna(subset=config['obs']['f2']['datetime_cols'])
-            with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
+            with open(Path(config['site_dir'] + 'debug_obs.txt'), 'a') as f:
                 print('f2 read in', file=f)
                 print(f2, file=f)
                 print(obs_data.dtypes, file=f)
@@ -1393,7 +1396,7 @@ def combine_site_observations(config_file):
             obs_data['PRECIP'] = obs_data['PRECIP']/3600
             # remove uneeded columns
             obs_data = obs_data.drop(columns=['RH'])
-            with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
+            with open(Path(config['site_dir'] + 'debug_obs.txt'), 'a') as f:
                 print('data adjusted', file=f)
                 print(obs_data, file=f)
                 print(obs_data.head(), file=f)
@@ -1422,42 +1425,42 @@ def combine_site_observations(config_file):
             pass
         # drop old date/time columns
         obs_data = obs_data.drop(columns=config['obs']['f1']['datetime_cols'], errors='ignore')    
-        with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
+        with open(Path(config['site_dir'] + 'debug_obs.txt'), 'a') as f:
             print(obs_data['time'], file=f)
             print('past1', file=f)
         # remove duplicate timestamps
         obs_data = obs_data.drop_duplicates(subset='time')
-        with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
+        with open(Path(config['site_dir'] + 'debug_obs.txt'), 'a') as f:
             print('past2', file=f)
         # create datetime values from numerical timestamp after conversion to string
         obs_data.loc[:,'time'] = obs_data['time'].apply(lambda x: datetime.strptime(x, config['obs']['f1']['datetime_format']))
-        with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
+        with open(Path(config['site_dir'] + 'debug_obs.txt'), 'a') as f:
             print('past3', file=f)
         # create new index that can fill missing timesteps
         new_index = pd.date_range(start=obs_data.at[obs_data.index[0],'time'], \
                                   end=obs_data.at[obs_data.index[-1],'time'], freq=config['obs']['f1']['freq'])
-        with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
+        with open(Path(config['site_dir'] + 'debug_obs.txt'), 'a') as f:
             print('past4', file=f)
         # set dateime as index
         print(obs_data['time'].dtypes)
         obs_data = obs_data.set_index(['time'])
-        with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
+        with open(Path(config['site_dir'] + 'debug_obs.txt'), 'a') as f:
             print('past5', file=f)
         # create xarray dataset
         ds = obs_data.to_xarray()
-        with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
+        with open(Path(config['site_dir'] + 'debug_obs.txt'), 'a') as f:
             print('past6', file=f)
         # use reindex to add the missing timesteps and fill data values with na as default
         ds = ds.reindex({"time": new_index})
-        with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
+        with open(Path(config['site_dir'] + 'debug_obs.txt'), 'a') as f:
             print('past7', file=f)
         # convert to 365_day calendar using dataset.convert_calendar (drops leap days)
         ds = ds.convert_calendar("365_day")
-        with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
+        with open(Path(config['site_dir'] + 'debug_obs.txt'), 'a') as f:
             print('past8', file=f)
         # shift time index by offset from GMT described in observational dataset
         ds.coords['time'] = ds.indexes['time'].shift(config['obs_GMT_adj'], 'h')
-        with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
+        with open(Path(config['site_dir'] + 'debug_obs.txt'), 'a') as f:
             print('past9', file=f)
             print(ds, file=f)
         ## set netcdf write characteristics for xarray.to_netcdf()
@@ -1472,7 +1475,7 @@ def combine_site_observations(config_file):
                         format=config['nc_write']['format'],\
                         engine=config['nc_write']['engine'])
     except Exception as error:
-        with open(Path(config['site_dir'] + 'debug.txt'), 'a') as f:
+        with open(Path(config['site_dir'] + 'debug_obs.txt'), 'a') as f:
             print(error, file=f)
         
 # define function to create mapped dictionary for groups
@@ -1584,7 +1587,7 @@ def bias_calculation(f_iter):
     config = read_config(f_iter[0])
     bias_type = f_iter[1]
     time_avg = f_iter[2]
-    with open(Path(config['site_dir'] + time_avg + '_debug.txt'), 'w') as f:
+    with open(Path(config['site_dir'] + '/debug_' + time_avg + '.txt'), 'w') as f:
         print('bias calculation started', file=f)
     # create file names for CRUJRA and obs mydm
     f_cru = Path(config['site_dir'] + "CRUJRA" + "_" + config['site_name'] + "_" +  time_avg + "_mym.nc")
@@ -1626,7 +1629,7 @@ def bias_calculation(f_iter):
             if bc[var].isnull().sum() < 0.1*len(bc[var]):
                 bc[var] = bc[var].interpolate_na(dim='groupvar', method='nearest')
         except Exception as error:
-            with open(Path(config['site_dir'] + time_avg + '_debug.txt'), 'a') as f:
+            with open(Path(config['site_dir'] + '/debug_' + time_avg + '.txt'), 'a') as f:
                 print(error, file=f)
             pass
     # set netcdf write characteristics for xarray.to_netcdf()
@@ -1645,7 +1648,7 @@ def bias_correction(f_iter):
     config = read_config(f_iter[0])
     bias_type = f_iter[1]
     time_avg = f_iter[2]
-    with open(Path(config['site_dir'] + time_avg + '_debug.txt'), 'w') as f:
+    with open(Path(config['site_dir'] + '/debug_' + time_avg + '.txt'), 'w') as f:
         print('bias correction started', file=f)
     # create file name for fully adjusted dataset
     cru_file = Path(config['site_dir'] + "CRUJRA_" + config['site_name'] + "_allyears.nc")
@@ -1687,7 +1690,7 @@ def bias_correction(f_iter):
                 ds_cru[var] = ds_cru[var].groupby('groupvar') * ds_bias[var]
                 ds_cru[var] = (ds_cru[var] / 1000.0)
         except Exception as error:
-            with open(Path(config['site_dir'] + time_avg + '_debug.txt'), 'a') as f:
+            with open(Path(config['site_dir'] + '/debug_' + time_avg + '.txt'), 'a') as f:
                 print(error, file=f)
             pass
     # final QQ for correct files
@@ -1789,11 +1792,11 @@ def combine_corrected_climate(input_list):
     ds_sites = ds_sites.sel(time=slice(start_time, end_time))
     # delete previous attributes
     global_attrs = list(ds_sites.attrs)
-    with open(Path('/projects/warpmip/shared/forcing_data/biascorrected_forcing/nc_debug.txt'), 'w') as f:
+    with open(Path('/projects/warpmip/shared/forcing_data/biascorrected_forcing/debug_nc.txt'), 'w') as f:
         print(global_attrs, file=f)
     for item in global_attrs:
         del ds_sites.attrs[item]
-    with open(Path('/projects/warpmip/shared/forcing_data/biascorrected_forcing/nc_debug.txt'), 'a') as f:
+    with open(Path('/projects/warpmip/shared/forcing_data/biascorrected_forcing/debug_nc.txt'), 'a') as f:
         for varname, da in ds_sites.data_vars.items():
             print(da.attrs, file=f)
     # change global file attributes
@@ -1807,7 +1810,7 @@ def combine_corrected_climate(input_list):
     )
     # print file output for debug
     with option_context('display.max_rows', 10, 'display.max_columns', 10):
-        with open(Path('/projects/warpmip/shared/forcing_data/biascorrected_forcing/nc_debug.txt'), 'a') as f:
+        with open(Path('/projects/warpmip/shared/forcing_data/biascorrected_forcing/debug_nc.txt'), 'a') as f:
             print(ds_sites, file=f)
     # save file
     ds_sites.to_netcdf(nc_out, mode="w", \
@@ -1830,7 +1833,7 @@ def replace_clm_14site_climate(input_list):
         ds = ds_tmp.load()
     try:   
         # add experimental warming onset for OTCs
-        with open(Path(config['new_dir']+'/siteclimate_debug.txt'), 'w') as f:
+        with open(Path(config['new_dir']+'/debug_siteclimate.txt'), 'w') as f:
             print('Starting surface data addition of warming onset:\n', file=f)
             print(ds, file=f)
             print('Longitude of current gridcells:\n', file=f)
@@ -1838,11 +1841,12 @@ def replace_clm_14site_climate(input_list):
         # define OTC and SF experimental start dates at each site
         otc_start = [2008,2015,1994,1996,2005,2011,2012,2013,2007,2017,2012,2003,2002,1994]
         sf_start = [2008,2015,1994,1996,2005,2011,2017,2012,2007,2017,2012,2003,2002,1994]
+        site_names = ['USA-EightMileLake','USA-Toolik','USA-Utqiagvik','USA-Atqasuk','CAN-DaringLake',
+                     'CAN-WanderingRiver','CAN-CambridgeBay','GRE-Disko','GRE-Zackenberg','NOR-Iskoras',
+                     'RUS-Seida','SVA-Adventdalen','SVA-Endalen','SWE-Abisko']
         # create copy of original ds to make final adjustments
         ds_adj = ds.copy(deep=True)
-        # replace Svalbard zbedrock,ORGANIC values with Zackenburg as next closest site
-        ds_adj['zbedrock'].loc[11] = ds_adj['zbedrock'][8]
-        ds_adj['zbedrock'].loc[12] = ds_adj['zbedrock'][8]
+        # replace Svalbard ORGANIC values with Zackenburg as next closest site in lat
         ds_adj['ORGANIC'].loc[:,11] = ds_adj['ORGANIC'][:,8]
         ds_adj['ORGANIC'].loc[:,12] = ds_adj['ORGANIC'][:,8]
         # change all natveg percentages to 100%, and other patch percentages to zero
@@ -1852,16 +1856,26 @@ def replace_clm_14site_climate(input_list):
         ds_adj['PCT_LAKE'].values =     [0.0] * 14
         ds_adj['PCT_URBAN'].values =   [[0.0] * 14] * 3 
         ds_adj['PCT_WETLAND'].values =  [0.0] * 14
-        # remove all trees from PFTs
-        ds_adj['PCT_NAT_PFT'].loc[1:8,:] = 0.0
+        # add site names variable
+        ds_adj['site_name'] = ds_adj['LONGXY']
+        ds_adj['site_name'].values = site_names
+        del ds_adj.site_name.attrs['long_name']
+        del ds_adj.site_name.attrs['units']
+        ds_adj['site_name'] = ds_adj['site_name'].assign_attrs(
+             description='Site names for each experimental site (gridcell)')
         # adjust individual sites to have more realistic pfts, especially dominant species
         # bare ground to zero based on observational data generally collected from vegetated collars
         # PFTs split only into evergreen shrub(bes), deciduous shrub(bds), and arctic grass (c3ag)
         for grid in range(0,14):
+            # subset zberock
+            zbed = ds_adj['zbedrock'][grid]
+            # check if zbedrock is below 5m, if so replace with 5m
+            if zbed < 5.0:
+                zbed = 5.0
             # get current grids list of PFT percentages
             pfts = ds_adj['PCT_NAT_PFT'][:,grid]
             # replace all pfts with zero
-            pfts.loc[0:14] = 0.0
+            pfts.loc[0:15] = 0.0
             # do specific things for each site based on reduced site info
             match grid:
                 case 0: # USA-EightMileLake
@@ -1892,22 +1906,31 @@ def replace_clm_14site_climate(input_list):
                      pfts.loc[[9,11,12]] = [50.0,20.0,30.0]
                 case 13: # SWE-Abisko
                      pfts.loc[[9,11,12]] = [35.0,35.0,30.0]
-            # assign manipulated PFT values back to grid
+            # assign manipulated PFT/zbed values back to grid
             ds_adj['PCT_NAT_PFT'].loc[:,grid] = pfts
+            ds_adj['zbedrock'].loc[grid] = zbed
         # create OTC and SF surface files from adjusted file
         ds_otc = ds_adj.copy(deep=True)
         ds_sf = ds_adj.copy(deep=True)
         # copy dataset that has correct dims into warming_onset var, replace values
         ds_otc['warming_onset'] = ds_otc['LONGXY']
         ds_otc['warming_onset'].values = otc_start
+        del ds_otc.warming_onset.attrs['long_name']
+        del ds_otc.warming_onset.attrs['units']
         ds_otc['warming_onset'] = ds_otc['warming_onset'].assign_attrs(
             units='year', description='Year of experimental warming onset for OTCs')
         ds_sf['warming_onset'] = ds_sf['LONGXY']
         ds_sf['warming_onset'].values = sf_start
+        del ds_sf.warming_onset.attrs['long_name']
+        del ds_sf.warming_onset.attrs['units']
         ds_sf['warming_onset'] = ds_sf['warming_onset'].assign_attrs(
             units='year', description='Year of experimental warming onset for SFs')
         # check surf data addition
-        with open(Path(config['new_dir']+'/siteclimate_debug.txt'), 'a') as f:
+        with open(Path(config['new_dir']+'/debug_siteclimate.txt'), 'a') as f:
+            print('Site Names:\n', file=f)
+            print(ds_adj['site_name'], file=f)
+            print('zbedrock:\n', file=f)
+            print(ds_adj['zbedrock'], file=f)
             print('PCT_CROP:\n', file=f)
             print(ds_adj['PCT_CROP'], file=f)
             print('PCT_GLACIER:\n', file=f)
@@ -1974,7 +1997,7 @@ def replace_clm_14site_climate(input_list):
                 format=config['nc_write']['format'], \
                 engine=config['nc_write']['engine'])
     except Exception as error:
-        with open(Path(config['new_dir']+'/siteclimate_debug.txt'), 'a') as f:
+        with open(Path(config['new_dir']+'/debug_siteclimate.txt'), 'a') as f:
             print(error, file=f)
     # open biascorrected climate dataset file
     with xr.open_dataset(bc_file, engine=config['nc_read']['engine'], decode_cf=True, use_cftime=True) as ds_tmp:
@@ -1997,12 +2020,12 @@ def replace_clm_14site_climate(input_list):
         tpqw_file = [f for f in files if 'TPQWL' in f]
         file_list.append([year, prec_file[0], solr_file[0], tpqw_file[0]])
     # reset debug print statement before loop
-    with open(Path(config['new_dir']+'/siteclimate_debug.txt'), 'a') as f:
+    with open(Path(config['new_dir']+'/debug_siteclimate.txt'), 'a') as f:
         print('Starting data replacement loop:\n', file=f)
     # loop through 1901-2021 file groups
     for file_group in file_list:
         # open annual files for precip/solar/tpqwl file for that year
-        with open(Path(config['new_dir']+'/siteclimate_debug.txt'), 'a') as f:
+        with open(Path(config['new_dir']+'/debug_siteclimate.txt'), 'a') as f:
             print(file_group[1], file=f)
             print(file_group[2], file=f)
             print(file_group[3], file=f)
@@ -2012,7 +2035,7 @@ def replace_clm_14site_climate(input_list):
         ds_sub = ds.sel(time=slice(time_start,time_end)).copy(deep=True)
         # print statement to debug before data change
         with option_context('display.max_rows', 10, 'display.max_columns', 10):
-            with open(Path(config['new_dir']+'/siteclimate_debug.txt'), 'a') as f:
+            with open(Path(config['new_dir']+'/debug_siteclimate.txt'), 'a') as f:
                 print('\nYear of subset data:\n', file=f)
                 print(file_group[0], file=f)
                 print(time_start, file=f)
@@ -2059,7 +2082,7 @@ def replace_clm_14site_climate(input_list):
             ds_tpqw = ds_tmp.load()
         # print statement to debug before data change
         with option_context('display.max_rows', 10, 'display.max_columns', 10):
-            with open(Path(config['new_dir']+'/siteclimate_debug.txt'), 'a') as f:
+            with open(Path(config['new_dir']+'/debug_siteclimate.txt'), 'a') as f:
                 print(ds_sub['site_name'], file=f)
                 print('\nReformatted Biascorrected data:\n', file=f)
                 print(ds_sub, file=f)
@@ -2071,7 +2094,7 @@ def replace_clm_14site_climate(input_list):
                 print(ds_tpqw, file=f)
         # adjust datafiles to have 365_day calendar and hourly timestep
         new_index = pd.date_range(start=time_start, end=time_end, freq='1H')
-        with open(Path(config['new_dir']+'/siteclimate_debug.txt'), 'a') as f:
+        with open(Path(config['new_dir']+'/debug_siteclimate.txt'), 'a') as f:
             print('\nnew index for dated:\n', file=f)
             print(new_index,file=f)
         new_index = new_index[~((new_index.day == 29) & (new_index.month == 2))]
@@ -2106,7 +2129,7 @@ def replace_clm_14site_climate(input_list):
         wind_nan = ds_tpqw['WIND'].isnull().sum()
         # print statement to debug after data change
         with option_context('display.max_rows', 10, 'display.max_columns', 10):
-            with open(Path(config['new_dir']+'/siteclimate_debug.txt'), 'a') as f:
+            with open(Path(config['new_dir']+'/debug_siteclimate.txt'), 'a') as f:
                 print('\nBC Precip dataset:\n', file=f)
                 print(ds_prec, file=f)
                 print('\nBC Radiation dataset:\n', file=f)
@@ -2148,7 +2171,7 @@ def replace_clm_14site_climate(input_list):
                     format=config['nc_write']['format'], \
                     engine=config['nc_write']['engine'])
         except Exception as error:
-            with open(Path(config['new_dir']+'/siteclimate_debug.txt'), 'a') as f:
+            with open(Path(config['new_dir']+'/debug_siteclimate.txt'), 'a') as f:
                 print(error, file=f)
             
 # funtion to output pdf report
@@ -2187,7 +2210,7 @@ def plot_site_graphs(input_list):
     with xr.open_dataset(f_obs_mym, engine=config['nc_read']['engine']) as ds_tmp:
         ds_obs_mym = ds_tmp.load()
     # print statment
-    with open(Path(config['site_dir'] + time_avg +'_debug.txt'), 'w') as f:
+    with open(Path(config['site_dir'] + '/debug_' + time_avg + '.txt'), 'w') as f:
         print('data for plotting uploaded', file=f)
     # define function to graph
     def graph_time(ds1, ds2, year_start, year_end, xlab, title, title_size, file_dir, bias, scatter,\
@@ -2263,7 +2286,7 @@ def plot_site_graphs(input_list):
                         # plot second dataset
                         ds2_copy[var].plot(color=obs_color, alpha=0.8)
                     except Exception as error:
-                        with open(Path(config['site_dir'] + time_avg +'_debug.txt'), 'a') as f:
+                        with open(Path(config['site_dir'] + '/debug_' + time_avg +'.txt'), 'a') as f:
                             print(error, file=f)
                         pass
                 elif scatter == True:
@@ -2307,7 +2330,7 @@ def plot_site_graphs(input_list):
                         ds2_max = np.nanmax((ds2_xval[ds2_xval != np.inf], ds2_yval[ds2_yval != np.inf]))
                         xr.plot.scatter(ds=ds2_copy, x=x_var, y=y_var, color=obs_color, alpha=0.8)
                     except Exception as error:
-                        with open(Path(config['site_dir'] + time_avg +'_debug.txt'), 'a') as f:
+                        with open(Path(config['site_dir'] + '/debug_' + time_avg +'.txt'), 'a') as f:
                             print('scatter error:', error, file=f)
                         pass
                 # axis labels
@@ -2354,7 +2377,7 @@ def plot_site_graphs(input_list):
                 # close figure
                 plt.close()
             except Exception as error:
-                with open(Path(config['site_dir'] + time_avg +'_debug.txt'), 'a') as f:
+                with open(Path(config['site_dir'] + '/debug_' + time_avg +'.txt'), 'a') as f:
                     print(error, file=f)
                 pass
     ###### full time seris plots
@@ -2376,7 +2399,7 @@ def plot_site_graphs(input_list):
         graph_time(ds_cru, ds_obs, config['year_start'], config['year_end'], x_lab, title, title_size, config['site_dir'], bias, scatter, \
                 time_scale, cru_color, obs_color, leg_text, leg_loc, text_size, plot_dpi, '') 
     except Exception as error:
-        with open(Path(config['site_dir'] + time_avg +'_debug.txt'), 'a') as f:
+        with open(Path(config['site_dir'] + '/debug_' + time_avg + '.txt'), 'a') as f:
             print(error, file=f)
         pass
     # Additive biascorrected cru and observations 
@@ -2386,7 +2409,7 @@ def plot_site_graphs(input_list):
         graph_time(ds_cru_abc, ds_obs, config['year_start'], config['year_end'], x_lab, title, title_size, config['site_dir'], bias, scatter, \
                 time_scale, cru_color, obs_color, leg_text, leg_loc, text_size, plot_dpi, '_abc') 
     except Exception as error:
-        with open(Path(config['site_dir'] + time_avg +'_debug.txt'), 'a') as f:
+        with open(Path(config['site_dir'] + '/debug_' + time_avg +'.txt'), 'a') as f:
             print(error, file=f)
         pass
     # Multiplicative biascorrected cru and observations 
@@ -2396,7 +2419,7 @@ def plot_site_graphs(input_list):
         graph_time(ds_cru_mbc, ds_obs, config['year_start'], config['year_end'], x_lab, title, title_size, config['site_dir'], bias, scatter, \
                 time_scale, cru_color, obs_color, leg_text, leg_loc, text_size, plot_dpi, '_mbc') 
     except Exception as error:
-        with open(Path(config['site_dir'] + time_avg +'_debug.txt'), 'a') as f:
+        with open(Path(config['site_dir'] + '/debug_' + time_avg + '.txt'), 'a') as f:
             print(error, file=f)
         pass
     ###### climate trend graphs
@@ -2472,7 +2495,7 @@ def plot_site_graphs(input_list):
         obs_dict = dict(zip(original_data_vars, new_obs_vars))
         # subset dict to only variables that exist in observations to rename
         obs_dict = {k: obs_dict[k] for k in ds_obs_org2.data_vars}
-        with open(Path(config['site_dir'] + time_avg +'_debug.txt'), 'a') as f:
+        with open(Path(config['site_dir'] + '/debug_' + time_avg + '.txt'), 'a') as f:
             print(obs_dict, file=f)
         # rename datasets for combination
         ds_obs_org2 = ds_obs_org2.rename(obs_dict)
@@ -2510,7 +2533,7 @@ def plot_site_graphs(input_list):
         ds_cru3 = ds_cru2.assign_coords(groupvar = ('time', map_groups(ds_cru2.indexes['time'], main_window, sub_window, config)))
         ds_abias3 = ds_abias2.assign_coords(groupvar = ('time', map_groups(ds_abias2.indexes['time'], main_window, sub_window, config)))
         ds_mbias3 = ds_mbias2.assign_coords(groupvar = ('time', map_groups(ds_mbias2.indexes['time'], main_window, sub_window, config)))
-        with open(Path(config['site_dir'] + time_avg +'_debug.txt'), 'a') as f:
+        with open(Path(config['site_dir'] + '/debug_' + time_avg + '.txt'), 'a') as f:
             print(ds_cru3, file=f)
             print(ds_abias3, file=f)
             print(ds_mbias3, file=f)
@@ -2543,7 +2566,7 @@ def plot_site_graphs(input_list):
         graph_time(ds_cru_org2, ds_mbias_org2, config['year_start'], config['year_end'], x_lab, title, title_size, config['site_dir'], bias, scatter, \
                     time_scale, cru_color, obs_color, leg_text, leg_loc, text_size, plot_dpi, '_mbc_rsqr') 
     except Exception as error:
-        with open(Path(config['site_dir'] + time_avg + '_debug.txt'), 'a') as f:
+        with open(Path(config['site_dir'] + '/debug_' + time_avg + '.txt'), 'a') as f:
             print(error, file=f)
         pass
 
@@ -3019,15 +3042,15 @@ def process_simulation_files(f, top_config):
     out_file = f[3]
     # check if simulation dataset exists for model
     data_check = 'has_' + sim_type
-    # context manager to shut up dask chunk warning
+    # context manager to keep dask from auto-rechunking
     with dask.config.set(**{'array.slicing.split_large_chunks': False}):
         # check if dataset exists
         if config[data_check] == "True":
-            with open(Path(config['output_dir'] + config['model_name'] + '/' + sim_type + '_debug.txt'), 'w') as pf:
+            with open(Path(config['output_dir'] + config['model_name'] + '/debug_' + sim_type + '.txt'), 'w') as pf:
                 print(f, file=pf)
             if sim_type == 'b1':
                 chunk_read = config['nc_read']['b1_chunks']
-                zarr_chunk_out = 150
+                zarr_chunk_out = 144
             else:
                 chunk_read = config['nc_read']['b2_chunks']
                 zarr_chunk_out = 365
@@ -3059,7 +3082,7 @@ def process_simulation_files(f, top_config):
                         # choose arctic crass pft to reduce dimensions of TotalResp
                         ds = ds.sel(pft=3, method="nearest")
                         ds = ds.drop_vars('pft')
-                        with open(Path(config['output_dir'] + config['model_name'] + '/' + sim_type + '_debug.txt'), 'a') as pf:
+                        with open(Path(config['output_dir'] + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
                             print(ds, file=pf)
                     else:
                         # open using mfdataset and merge using combine_by_coords
@@ -3110,7 +3133,7 @@ def process_simulation_files(f, top_config):
                     ds4 = xr.open_mfdataset(sim_files[3], parallel=True, engine=engine, chunks=chunk_read, preprocess=partial_ecosys, **kwargs)
                     # merge TotalResp and SoilTemps
                     ds = xr.merge([ds1,ds2,ds3,ds4])
-                    with open(Path(config['output_dir'] + config['model_name'] + '/' + sim_type + '_debug.txt'), 'a') as pf:
+                    with open(Path(config['output_dir'] + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
                         print(ds, file=pf)
                     # loop through soil layer dataarrays, for each soil layer add a depth coord and expand dim
                     ds_list = []
@@ -3128,13 +3151,13 @@ def process_simulation_files(f, top_config):
                         layer_iter += 1
                     # merge all the SoilTemp layers into 4D dataarray
                     ds_soiltemp = xr.combine_by_coords(ds_list)
-                    with open(Path(config['output_dir'] + config['model_name'] + '/' + sim_type + '_debug.txt'), 'a') as pf:
+                    with open(Path(config['output_dir'] + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
                         print(ds, file=pf)
                     ds = ds.drop_vars(layers)
-                    with open(Path(config['output_dir'] + config['model_name'] + '/' + sim_type + '_debug.txt'), 'a') as pf:
+                    with open(Path(config['output_dir'] + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
                         print(ds, file=pf)
                     ds = xr.merge([ds, ds_soiltemp])
-                    with open(Path(config['output_dir'] + config['model_name'] + '/' + sim_type + '_debug.txt'), 'a') as pf:
+                    with open(Path(config['output_dir'] + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
                         print(ds, file=pf)
                     # add long name and unit attributes
                     ds['SoilTemp'].attrs['long_name'] = 'Soil temperature by layer'
@@ -3145,16 +3168,16 @@ def process_simulation_files(f, top_config):
                     #ds = ds.chunk({'time': 300, 'SoilDepth': -1, 'lat': -1, 'lon': -1})
                     # subset to variables of interest
                     ds = ds[config['subset_vars']]
-                    with open(Path(config['output_dir'] + config['model_name'] + '/' + sim_type + '_debug.txt'), 'a') as pf:
+                    with open(Path(config['output_dir'] + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
                         print(ds, file=pf)
                     # change data variables to float32 to save space
                     ds = ds.astype('float32')
-                    with open(Path(config['output_dir'] + config['model_name'] + '/' + sim_type + '_debug.txt'), 'a') as pf:
+                    with open(Path(config['output_dir'] + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
                         print(ds, file=pf)
                     # assign encoding fillvalues
                     for var in ds.data_vars:
                         ds[var].encoding['_FillValue'] = config['nc_write']['fillvalue']
-                    with open(Path(config['output_dir'] + config['model_name'] + '/' + sim_type + '_debug.txt'), 'a') as pf:
+                    with open(Path(config['output_dir'] + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
                         print(ds, file=pf)
                         print(ds['SoilTemp'].encoding, file=pf)
                         print(ds['TotalResp'].encoding, file=pf)
@@ -3215,7 +3238,7 @@ def process_simulation_files(f, top_config):
             if config['model_name'] in ['ELM2-NGEE', 'ecosys']:
                 ds = ds.assign_coords({'lon': (ds.lon % 360)})
                 ds = ds.sortby('lon', ascending=True)
-                with open(Path(config['output_dir'] + config['model_name'] + '/' + sim_type + '_debug.txt'), 'a') as pf:
+                with open(Path(config['output_dir'] + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
                     print('adjusted lon index', file=pf)
                     print(ds['SoilTemp'].encoding, file=pf)
                     print(ds['TotalResp'].encoding, file=pf)
@@ -3246,7 +3269,7 @@ def process_simulation_files(f, top_config):
             for var in missing_vars:
                 ds[var] = ds['TotalResp'].copy(deep=True)
                 ds[var].loc[:] = np.nan
-            with open(Path(config['output_dir'] + config['model_name'] + '/' + sim_type + '_debug.txt'), 'a') as pf:
+            with open(Path(config['output_dir'] + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
                 print('missing vars added with all nans:',file=pf)
                 print(missing_vars, file=pf)
                 print(ds, file=pf)
@@ -3254,13 +3277,30 @@ def process_simulation_files(f, top_config):
             # !!!!!!!!! THIS IS INCORRECT AVERAGE UNTIL REDONE WEHN LAYER THICKNESS/INTERFACES ARE KNOWN !!!!!!
             # need to create function to weight temp average by layer thickness and deal with partial thickness when 10cm is between nodes
             ds['SoilTemp_10cm'] = ds['SoilTemp'].sel(SoilDepth=slice(0.0,0.11)).mean(dim='SoilDepth')           
-            with open(Path(config['output_dir'] + config['model_name'] + '/' + sim_type + '_debug.txt'), 'a') as pf:
-                print('ds including 10cm soil temp:',file=pf)
-                print(ds, file=pf)
             # rescale from g C m-2 s-1 to g C m-2 day-1
             ds['TotalResp'] = ds['TotalResp'] * 86400  
+            # print out combined dataset for debugging
+            with open(Path(config['output_dir'] + '/debug_process_simulation.txt'), 'a') as pf:
+                with np.printoptions(threshold=np.inf):
+                    print(config['model_name'] + ':\n', file=pf)
+                    print('Combined dataset before rechunking', file=pf)
+                    print(ds, file=pf)
+                    print('time:', file=pf)
+                    print(ds['time'].head(), file=pf)
+                    print('lat:', file=pf)
+                    print(ds['lat'].values, file=pf)
+                    print('lon:', file=pf)
+                    print(ds['lon'].values, file=pf)
+                    print('SoilDepth:', file=pf)
+                    print(ds['SoilDepth'].values, file=pf)
+            # output clm5 lat,lon
+            if config['model_name'] == 'CLM5':
+                lat_df = ds['lat'].to_dataframe()
+                lon_df = ds['lon'].to_dataframe()
+                lat_df.to_csv(config['output_dir']+'clm5_lat.csv')
+                lon_df.to_csv(config['output_dir']+'clm5_lon.csv')
             # set zarr compression and encoding
-            compress = Zstd(level=3) #, shuffle=Blosc.BITSHUFFLE)
+            compress = Zstd(level=6) #, shuffle=Blosc.BITSHUFFLE)
             # clear all chunk and fill value encoding/attrs
             for var in ds:
                 try:
@@ -3281,10 +3321,10 @@ def process_simulation_files(f, top_config):
                 'lat': -1,
                 'lon': -1}
             ds = ds.chunk(dim_chunks) 
-            with open(Path(config['output_dir'] + config['model_name'] + '/' + sim_type + '_debug.txt'), 'a') as pf:
+            with open(Path(config['output_dir'] + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
                 print('data rechunked',file=pf)
                 print(ds, file=pf)
-            encode = {var: {'_FillValue': np.NaN, 'compressor': compress} for var in ds.data_vars}
+            encode = {var: {'_FillValue': np.nan, 'compressor': compress} for var in ds.data_vars}
             #    'SoilTemp': {'_FillValue': np.NaN, 'compressor': compress},
             #    'TotalResp': {'_FillValue': np.NaN, 'compressor': compress}}
             #comp = dict(compressor = compress, _FillValue=np.NaN)
@@ -3292,7 +3332,7 @@ def process_simulation_files(f, top_config):
             #encode = {var: comp for var in ds.data_vars}
             # output to zarr file
             ds.to_zarr(out_file, encoding=encode, mode="w")
-            with open(Path(config['output_dir'] + config['model_name'] + '/' + sim_type + '_debug.txt'), 'a') as pf:
+            with open(Path(config['output_dir'] + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
                 print('encoded output using:', file=pf)
                 print(encode, file=pf)
             # close file connections
@@ -3301,6 +3341,363 @@ def process_simulation_files(f, top_config):
             except Exception as error:
                 print(error)
                 pass
+
+# output variable subset netcdf
+def aggregate_harmonize_regional_sims(f):
+    # read model config
+    config = read_config(f)
+    # set output file location
+    with open(Path(config['output_dir'] + 'debug_agg_sims.txt'), 'w') as pf:
+        print(config, file=pf)
+    # open b2, otc, sf zarr files, add simulation dimension, create list to merge
+    ds_list = []
+    for sim in ['b2','otc','sf']:
+        try:
+            # create name of file to open for model/sim zarr files
+            ds_file = config['output_dir'] + config['model_name'] + '/WrPMIP_Pan-Arctic_' + config['model_name'] + '_' + sim + '.zarr'
+            out_file = config['output_dir'] + config['model_name'] + '/WrPMIP_Pan-Arctic_' + config['model_name'] + '_sims_merged.zarr'
+            # open model file for current simulation
+            ds = xr.open_zarr(ds_file, chunks='auto', chunked_array_type='dask', use_cftime=True, mask_and_scale=False) 
+            # assign simulation diension
+            ds = ds.assign_coords({'sim': sim})
+            ds = ds.expand_dims('sim')
+            # append dataset to list for later merging
+            ds_list.append(ds)
+        except Exception as error:
+            with open(Path(config['output_dir'] + 'debug_agg_sims.txt'), 'a') as pf:
+                print(error, file=pf)
+            pass
+    with open(Path(config['output_dir'] + 'debug_agg_sims.txt'), 'a') as pf:
+        print('dataset list created', file=pf)
+    # merge dataset
+    ds_sims = xr.concat(ds_list, dim='sim')
+    with open(Path(config['output_dir'] + 'debug_agg_sims.txt'), 'a') as pf:
+        print('new model chunks:', file=pf)
+        print(ds_sims['SoilTemp'].encoding['chunks'], file=pf)
+    # set zarr compression and encoding
+    compress = Zstd(level=6) #, shuffle=Blosc.BITSHUFFLE)
+    # clear all chunk and fill value encoding/attrs
+    for var in ds_sims:
+        try:
+            del ds_sims[var].encoding['chunks']
+        except:
+            pass
+        try:
+            del ds_sims[var].encoding['_FillValue']
+        except:
+            pass
+        try:
+            del ds_sims[var].attrs['_FillValue']
+        except:
+            pass
+    dim_chunks = {
+        'time': 365,
+        'SoilDepth': -1,
+        'lat': -1,
+        'lon': -1,
+        'sim': 1}
+    ds_sims = ds_sims.chunk(dim_chunks) 
+    encode = {var: {'_FillValue': np.nan, 'compressor': compress} for var in ds_sims.data_vars}
+    # output regional zarr for each model with b2,otc,sf added as siulation dimension 
+    ds_sims.to_zarr(out_file, encoding=encode, mode="w")
+
+# output final harmonized pan-arctic regional database
+def harmonize_regional_models(f):
+    # load config into list for each model
+    config = read_config(f)
+    # context manager to keep dask from auto-rechunking
+    with dask.config.set(**{'array.slicing.split_large_chunks': False}):
+        try:
+            # create name of file to open for each model
+            ds_file = config['output_dir'] + config['model_name'] + '/WrPMIP_Pan-Arctic_' + config['model_name'] + '_sims_merged.zarr'
+            out_file = config['output_dir'] + config['model_name'] + '/WrPMIP_Pan-Arctic_' + config['model_name'] + '_sims_harmonized.zarr'
+            # open model zarr
+            ds = xr.open_zarr(ds_file, chunks='auto', chunked_array_type='dask', use_cftime=True, mask_and_scale=False) 
+            # assign model names as new dimension to merge on
+            ds = ds.assign_coords({'model': config['model_name']})
+            ds = ds.expand_dims('model')
+        except Exception as error:
+            with open(Path(config['output_dir'] + config['model_name'] + '/debug_harmonized_model.txt'), 'a') as pf:
+                print(error, file=pf)
+            pass
+        clm_lon = pd.read_csv(config['output_dir']+'clm5_lon.csv')['lon']
+        clm_lat = pd.read_csv(config['output_dir']+'clm5_lat.csv')['lat']
+        clm5_soil_depths = np.array([0.01,0.04,0.09,0.16,0.26,0.4,0.58,0.8,1.06,1.36,1.7,2.08,2.5,2.99,3.58, \
+                            4.27,5.06,5.95,6.94,8.03,9.795,13.328,19.483,28.871,41.998])
+        # subset/inpterplote models to clm5 grid/extent
+        if config['model_name'] not in ['CLM5','CLM5-ExIce']:
+            # read in clm lat/lon, make comparison da, interp_like to match grid size/extent
+            fake_data = np.zeros((len(clm_lon),len(clm_lat)))
+            like_array = xr.DataArray(
+                            data=fake_data,
+                            dims=['lon','lat'],
+                            coords=dict(
+                                lon=(['lon'],clm_lon),
+                                lat=(['lat'],clm_lat)))
+            ds = ds.interp_like(like_array, method="nearest", kwargs={'fill_value': np.nan})
+            # interpolate all model depths to clm5 depths by cubic spline interpolation/extrapolation
+            like_array = xr.DataArray(clm5_soil_depths, dims=['SoilDepth'], coords={'SoilDepth': clm5_soil_depths})
+            ds = ds.interp_like(like_array, method="cubic", kwargs={'fill_value':'extrapolate'})
+        # replace soilDepth dim with integers
+        ds = ds.assign_coords({'SoilDepth': range(1,len(clm5_soil_depths)+1)})
+        # check harmonzied dim
+        with open(Path(config['output_dir'] + config['model_name'] + '/debug_harmonized_model.txt'), 'a') as pf:
+            with np.printoptions(threshold=np.inf):
+                print(config['model_name'] + ':\n', file=pf)
+                print('Combined dataset before rechunking', file=pf)
+                print(ds, file=pf)
+                # print('clm5 imported lat:', file=pf)
+                # print(clm_lat, file=pf)
+                # print('clm5 imported lon:', file=pf)
+                # print(clm_lon, file=pf)
+                print('time:', file=pf)
+                print(ds['time'].head(), file=pf)
+                print('lat:', file=pf)
+                print(ds['lat'].values, file=pf)
+                print('lon:', file=pf)
+                print(ds['lon'].values, file=pf)
+                print('SoilDepth:', file=pf)
+                print(ds['SoilDepth'].values, file=pf)
+        # set zarr compression and encoding
+        compress = Zstd(level=6) #, shuffle=Blosc.BITSHUFFLE)
+        # clear all chunk and fill value encoding/attrs
+        for var in ds:
+            try:
+                del ds[var].encoding['chunks']
+            except:
+                pass
+            try:
+                del ds[var].encoding['_FillValue']
+            except:
+                pass
+            try:
+                del ds[var].attrs['_FillValue']
+            except:
+                pass
+        dim_chunks = {
+            'time': 365,
+            'SoilDepth': -1,
+            'lat': 20,
+            'lon': -1,
+            'sim': 1,
+            'model': 1}
+        ds = ds.chunk(dim_chunks) 
+        encode = {var: {'_FillValue': np.NaN, 'compressor': compress} for var in ds.data_vars}
+        # output regional zarr of entire pan-acrtic for all models and b2,otc,sf simulations 
+        ds.to_zarr(out_file, encoding=encode, mode="w")
+
+# output variable subset netcdf
+def aggregate_regional_models(f):
+    # context manager to not change chunk sizes
+    with dask.config.set(**{'array.slicing.split_large_chunks': False}):
+        # open each models zarr file and append to list for merge 
+        ds_list = []
+        for config_file in f:
+            try:
+                # open config file
+                config = read_config(config_file)
+                # create name of file to open for model/sim zarr files
+                ds_file = config['output_dir'] + config['model_name'] + '/WrPMIP_Pan-Arctic_' + config['model_name'] + '_sims_harmonized.zarr'
+                # open model file for current simulation
+                ds = xr.open_zarr(ds_file, chunks='auto', chunked_array_type='dask', use_cftime=True, mask_and_scale=False) 
+                # append dataset to list for later merging
+                ds_list.append(ds)
+            except Exception as error:
+                with open(Path(config['output_dir'] + 'debug_agg_models.txt'), 'a') as pf:
+                    print(error, file=pf)
+                pass
+        with open(Path(config['output_dir'] + 'debug_agg_models.txt'), 'a') as pf:
+            print('model list created', file=pf)
+        # merge dataset
+        ds = xr.concat(ds_list, dim='model')
+        with open(Path(config['output_dir'] + 'debug_agg_models.txt'), 'a') as pf:
+            print('new model chunks:', file=pf)
+            print(ds['SoilTemp'].encoding['chunks'], file=pf)
+        # set zarr compression and encoding
+        compress = Zstd(level=6) #, shuffle=Blosc.BITSHUFFLE)
+        # clear all chunk and fill value encoding/attrs
+        for var in ds:
+            try:
+                del ds[var].encoding['chunks']
+            except:
+                pass
+            try:
+                del ds[var].encoding['_FillValue']
+            except:
+                pass
+            try:
+                del ds[var].attrs['_FillValue']
+            except:
+                pass
+        dim_chunks = {
+            'time': 365,
+            'SoilDepth': -1,
+            'lat': 20,
+            'lon': -1,
+            'sim': 1,
+            'model': 1}
+        ds = ds.chunk(dim_chunks) 
+        encode = {var: {'_FillValue': np.nan, 'compressor': compress} for var in ds.data_vars}
+        # output regional zarr for each model with b2,otc,sf added as siulation dimension 
+        out_file = '/projects/warpmip/shared/processed_outputs/WrPMIP_Pan-Arctic_models_harmonized.zarr'
+        ds.to_zarr(out_file, encoding=encode, mode="w")
+
+# open final zarr to create netcdfs
+def regional_model_zarrs_to_netcdfs(input_list):
+    # parse inputs
+    f = input_list[0]
+    year = input_list[1]
+    # read config file
+    config = read_config(f)
+    # make start/end date from year
+    start_date = str(year)+'-01-01'
+    end_date = str(year)+'-12-31'
+    # make read in and out file names
+    zarr_in = config['output_dir'] + config['model_name'] + '/WrPMIP_Pan-Arctic_' + config['model_name'] + '_sims_harmonized.zarr'
+    ncdf_out = config['output_dir'] + config['model_name'] + '/WrPMIP_Pan-Arctic_' + config['model_name'] + '_sims_harmonized_' + str(year) + '.nc'
+    # open zarr file
+    ds = xr.open_zarr(zarr_in, chunks='auto', chunked_array_type='dask', use_cftime=True, mask_and_scale=False) 
+    # clear all chunk and fill value encoding/attrs
+    for var in ds:
+        try:
+            del ds[var].encoding['chunks']
+        except:
+            pass
+        try:
+            del ds[var].encoding['_FillValue']
+        except:
+            pass
+        try:
+            del ds[var].attrs['_FillValue']
+        except:
+            pass
+    try:
+        ds = ds.sel(time=slice(start_date,end_date))
+        #ds = ds.unify_chunks() 
+        # set netcdf encoding
+        comp = dict(zlib=config['nc_write']['zlib'], shuffle=config['nc_write']['shuffle'],\
+                complevel=config['nc_write']['complevel'],_FillValue=None) #config['nc_write']['fillvalue'])
+        encoding = {var: comp for var in ds.data_vars}
+        # output final netcdf(s)
+        ds.to_netcdf(ncdf_out, mode="w", encoding=encoding, \
+                format=config['nc_write']['format'], \
+                engine=config['nc_write']['engine'])
+    except:
+        pass
+
+# final zarr to netcdf
+def harmonized_model_zarr_to_monthly_netcdfs(input_list): 
+    # parse inputs
+    f = input_list[0]
+    year = input_list[1]
+    month = input_list[2]
+    # read config file
+    config = read_config(f)
+    # make start/end date from year
+    m = [0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    day = m[month]
+    start_date = str(year) + '-' + str(month) + '-01'
+    end_date = str(year) + '-' + str(month) + '-' + str(day)
+    # make read in and out file names
+    zarr_in = config['output_dir'] + config['model_name'] + '/WrPMIP_Pan-Arctic_' + config['model_name'] + '_sims_harmonized.zarr'
+    ncdf_out = config['output_dir'] + '/netcdf_output/WrPMIP_Pan-Arctic_models_harmonized_'+str(year)+'_'+str(month)+'.nc'
+    # open zarr file
+    ds = xr.open_zarr(zarr_in, chunks='auto', chunked_array_type='dask', use_cftime=True, mask_and_scale=False) 
+    # clear all chunk and fill value encoding/attrs
+    for var in ds:
+        try:
+            del ds[var].encoding['chunks']
+        except:
+            pass
+        try:
+            del ds[var].encoding['_FillValue']
+        except:
+            pass
+        try:
+            del ds[var].attrs['_FillValue']
+        except:
+            pass
+    try:
+        ds = ds.sel(time=slice(start_date,end_date))
+        #ds = ds.unify_chunks() 
+        # set netcdf encoding
+        comp = dict(zlib=config['nc_write']['zlib'], shuffle=config['nc_write']['shuffle'],\
+                complevel=config['nc_write']['complevel'],_FillValue=None) #config['nc_write']['fillvalue'])
+        encoding = {var: comp for var in ds.data_vars}
+        # output final netcdf(s)
+        ds.to_netcdf(ncdf_out, mode="w", encoding=encoding, \
+                format=config['nc_write']['format'], \
+                engine=config['nc_write']['engine'])
+    except:
+        pass
+
+# regional graphing
+def regional_model_graphs(input_list):
+    # graph type (mean, instantaneous)
+    graph_type = input_list[0]
+    # variable of interest
+    var = input_list[1]
+    # soil level
+    soil = input_list[2]
+    # open zarr file
+    zarr_file = '/projects/warpmip/shared/processed_outputs/WrPMIP_Pan-Arctic_models_harmonized.zarr'
+    ds = xr.open_zarr(zarr_file, chunks='auto', chunked_array_type='dask', use_cftime=True, mask_and_scale=False) 
+    # select soil layer
+    with open(Path('/projects/warpmip/shared/processed_outputs/debug_cartopy.txt'), 'a') as pf:
+        print('data loaded', file=pf)
+        print(ds, file=pf)
+    # change to -180/180 coords
+    ds['lon'] =('lon', (((ds.lon.values + 180) % 360) - 180))
+    # sortby for plot
+    ds = ds.sortby(['lon'])
+    # select seasons
+    def is_summer(month):
+        return (month >= 5) & (month <= 9)
+    def is_winter(month):
+        return (month >= 10) | (month <= 4 )
+    ds_annual = ds.isel(SoilDepth=soil).mean(dim=['time','model'], skipna=True)
+    ds_summer = ds.isel(SoilDepth=soil).sel(time=is_summer(ds['time.month'])).mean(dim=['time','model'], skipna=True)
+    ds_winter = ds.isel(SoilDepth=soil).sel(time=is_winter(ds['time.month'])).mean(dim=['time','model'], skipna=True)
+    with open(Path('/projects/warpmip/shared/processed_outputs/debug_cartopy.txt'), 'a') as pf:
+        print('soil subset with sel', file=pf)
+        print(ds, file=pf)
+        print(ds_annual, file=pf)
+        print(ds_summer, file=pf)
+        print(ds_winter, file=pf)
+    # check on max/min values of var after averages
+    var_min = min(ds_annual[var].min().values, ds_summer[var].min().values, ds_winter[var].min().values)
+    var_max = max(ds_annual[var].max().values, ds_summer[var].max().values, ds_winter[var].max().values)
+    # make graph circular
+    def add_circle_boundary(ax):
+        # Compute a circle in axes coordinates, which we can use as a boundary
+        # for the map. We can pan/zoom as much as we like - the boundary will be
+        # permanently circular.
+        theta = np.linspace(0, 2*np.pi, 100)
+        center, radius = [0.5, 0.5], 0.5
+        verts = np.vstack([np.sin(theta), np.cos(theta)]).T
+        circle = mpath.Path(verts * radius + center)
+        ax.set_boundary(circle, transform=ax.transAxes)
+    for sim in ds_annual['sim'].values:
+        for season in [[ds_annual,'annual'], [ds_summer,'summer'], [ds_winter,'winter']]:
+            # create outfile for each combination
+            out_file = '/projects/warpmip/shared/processed_outputs/Regional_harmonized_'+graph_type+'_'+season[1]+'_'+var+'_'+str(sim)+'.png' 
+            # subset seasonal data to perturbation simulation of interest
+            dsg = season[0].sel(sim=sim)
+            # Set figure size
+            fig = plt.figure(figsize=(8,6))
+            # Set the axes using the specified map projection
+            ax=plt.axes(projection=ccrs.Orthographic(0,90))
+            # Make a mesh plot
+            cs=ax.pcolormesh(dsg['lon'], dsg['lat'], dsg[var], clim=(var_min,var_max),
+                        transform = ccrs.PlateCarree(),cmap='coolwarm')
+            ax.coastlines()
+            #ax.gridlines()
+            cbar = plt.colorbar(cs,shrink=0.7,location='left',label=var)
+            ax.yaxis.set_ticks_position('left')
+            ax.set_extent([-180,180,55,90], crs=ccrs.PlateCarree())
+            add_circle_boundary(ax)
+            plt.savefig(out_file, dpi=150)
+            plt.close(fig)
 
 # create sub folder for site files
 def site_dir_prep(f):
@@ -3321,7 +3718,7 @@ def subsample_site_list(f, gps):
     # read all CRUJRA input file names from reanalysis directory
     dir_name = config['output_dir'] + config['model_name'] + '/'
     zarr_file = glob.glob("{}*{}*.zarr".format(dir_name, sim_type))
-    with open(Path(config['output_dir'] + config['model_name'] + '/sites/' + sim_type + '_debug.txt'), 'w') as pf:
+    with open(Path(config['output_dir'] + config['model_name'] + '/sites/debug_' + sim_type + '.txt'), 'w') as pf:
         print(zarr_file, file=pf)
     # file to output a site subset
     site_file = config['output_dir'] + config['model_name'] + '/sites/WrPMIP_sites_' + config['model_name'] + '_' + sim_type + '.zarr'
@@ -3356,7 +3753,7 @@ def subsample_sites(f):
         #elif sim_type in ['b2','otc','sf']:
         #    start_time, end_time = config['sim_length']['b2']
         #    ds = ds.sel(time=slice(start_time, end_time))
-        with open(Path(config['output_dir'] + config['model_name'] + '/sites/' + sim_type + '_debug.txt'), 'a') as pf:
+        with open(Path(config['output_dir'] + config['model_name'] + '/sites/debug_' + sim_type + '.txt'), 'a') as pf:
             print(ds, file=pf)
         # make single netcdf output for jeralyn/ILAMB
         #if (config['model_name'] == 'CLM5'):
@@ -3380,7 +3777,7 @@ def subsample_sites(f):
 
             # choose the neatest grid cell to the site
             ds_sub = ds.sel(lon=site_gps[site]['lon'], lat=site_gps[site]['lat'], method='nearest').copy()
-            with open(Path(config['output_dir'] + config['model_name'] + '/sites/' + sim_type + '_debug.txt'), 'a') as pf:
+            with open(Path(config['output_dir'] + config['model_name'] + '/sites/debug_' + sim_type + '.txt'), 'a') as pf:
                 print(ds_sub, file=pf)
                 print(site, file=pf)
             # expand a dimension to include site and save to list
@@ -3390,18 +3787,18 @@ def subsample_sites(f):
             ds_sub['lat'] = ds_sub['lat'].expand_dims('site')
             ds_sub['lon'] = ds_sub['lon'].expand_dims('site')
             ds_sub = ds_sub.chunk({'time': -1})
-            with open(Path(config['output_dir'] + config['model_name'] + '/sites/' + sim_type + '_debug.txt'), 'a') as pf:
+            with open(Path(config['output_dir'] + config['model_name'] + '/sites/debug_' + sim_type + '.txt'), 'a') as pf:
                 print(ds_sub, file=pf)
             ds_list.append(ds_sub)
-        with open(Path(config['output_dir'] + config['model_name'] + '/sites/' + sim_type + '_debug.txt'), 'a') as pf:
+        with open(Path(config['output_dir'] + config['model_name'] + '/sites/debug_' + sim_type + '.txt'), 'a') as pf:
             print('datasets appended', file=pf)
         # combine site dimension to have multiple sites
         #try:
         ds_sites = xr.combine_by_coords(ds_list)
         #except Exception as error:
-        #    with open(Path(config['output_dir'] + config['model_name'] + '/sites/' + sim_type + '_debug.txt'), 'a') as pf:
+        #    with open(Path(config['output_dir'] + config['model_name'] + '/sites/debug_' + sim_type + '.txt'), 'a') as pf:
         #        print(error, file=pf)
-        with open(Path(config['output_dir'] + config['model_name'] + '/sites/' + sim_type + '_debug.txt'), 'a') as pf:
+        with open(Path(config['output_dir'] + config['model_name'] + '/sites/debug_' + sim_type + '.txt'), 'a') as pf:
             print('merged datasets',file=pf)
             print(ds_sites, file=pf)
         # set zarr compression and encoding
@@ -3411,7 +3808,7 @@ def subsample_sites(f):
             'time': -1,
             'site': -1}
         ds_sites = ds_sites.chunk(dim_chunks) 
-        with open(Path(config['output_dir'] + config['model_name'] + '/sites/' + sim_type + '_debug.txt'), 'a') as pf:
+        with open(Path(config['output_dir'] + config['model_name'] + '/sites/debug_' + sim_type + '.txt'), 'a') as pf:
             print('data rechunked',file=pf)
             print(ds_sites, file=pf)
         compress = None #Zstd(level=3) #, shuffle=Blosc.BITSHUFFLE)
@@ -3431,17 +3828,17 @@ def subsample_sites(f):
                 del ds_sites[var].attrs['_FillValue']
             except:
                 pass
-        #with open(Path(config['output_dir'] + config['model_name'] + '/sites/' + sim_type + '_debug.txt'), 'a') as pf:
+        #with open(Path(config['output_dir'] + config['model_name'] + '/sites/debug_' + sim_type + '.txt'), 'a') as pf:
         #    print('past comp',file=pf)
         #    print(comp, file=pf)
         ## encoding
         #encoding = {var: comp for var in ds_sites.data_vars}
-        #with open(Path(config['output_dir'] + config['model_name'] + '/sites/' + sim_type + '_debug.txt'), 'a') as pf:
+        #with open(Path(config['output_dir'] + config['model_name'] + '/sites/debug_' + sim_type + '.txt'), 'a') as pf:
         #    print('past encoding',file=pf)
         #    print(encoding, file=pf)
         # write zarr
         ds_sites.to_zarr(site_file, encoding=encode,  mode="w")
-        with open(Path(config['output_dir'] + config['model_name'] + '/sites/' + sim_type + '_debug.txt'), 'a') as pf:
+        with open(Path(config['output_dir'] + config['model_name'] + '/sites/debug_' + sim_type + '.txt'), 'a') as pf:
             print('past zarr out',file=pf)
             print(ds_sites, file=pf)
         # close file connections
@@ -3482,7 +3879,7 @@ def aggregate_simulation_types(f):
             pass
     # merge dataset
     ds_sites = xr.merge(ds_list)
-    with open(Path(config['output_dir'] + config['model_name'] + '/sites_sims/warming_debug.txt'), 'a') as pf:
+    with open(Path(config['output_dir'] + config['model_name'] + '/sites_sims/debug_warming.txt'), 'a') as pf:
         print(ds_sites, file=pf)
     # create dict of delta names for creation
     new_name_dict = {"TotalResp": 'deltaTotalResp', "SoilTemp_10cm": 'deltaSoilTemp'}
@@ -3493,7 +3890,7 @@ def aggregate_simulation_types(f):
             # select warming treatment, subtract control
             ds_sub = ds_sites.sel(sim=sim_sel).copy()
             ds_control = ds_sites.sel(sim='b2').copy()
-            with open(Path(config['output_dir'] + config['model_name'] + '/sites_sims/warming_debug.txt'), 'a') as pf:
+            with open(Path(config['output_dir'] + config['model_name'] + '/sites_sims/debug_warming.txt'), 'a') as pf:
                 print(ds_sub, file=pf)
                 print(ds_control, file=pf)
             # create list of newly created delta variable names and calculate warming - control
@@ -3506,27 +3903,27 @@ def aggregate_simulation_types(f):
             keep_list = ['q10']
             keep_list.extend(list(new_name_dict.values())) 
             # subset to only new variables
-            with open(Path(config['output_dir'] + config['model_name'] + '/sites_sims/warming_debug.txt'), 'a') as pf:
+            with open(Path(config['output_dir'] + config['model_name'] + '/sites_sims/debug_warming.txt'), 'a') as pf:
                 print(ds_sub, file=pf)
             ds_sub = ds_sub[keep_list]
-            with open(Path(config['output_dir'] + config['model_name'] + '/sites_sims/warming_debug.txt'), 'a') as pf:
+            with open(Path(config['output_dir'] + config['model_name'] + '/sites_sims/debug_warming.txt'), 'a') as pf:
                 print(ds_sub, file=pf)
             # add simulation dimension back and expand dims to recreate same NetCDF shape
             ds_sub = ds_sub.assign_coords({'sim': sim_sel})
-            with open(Path(config['output_dir'] + config['model_name'] + '/sites_sims/warming_debug.txt'), 'a') as pf:
+            with open(Path(config['output_dir'] + config['model_name'] + '/sites_sims/debug_warming.txt'), 'a') as pf:
                 print(ds_sub, file=pf)
             ds_sub = ds_sub.expand_dims('sim')
-            with open(Path(config['output_dir'] + config['model_name'] + '/sites_sims/warming_debug.txt'), 'a') as pf:
+            with open(Path(config['output_dir'] + config['model_name'] + '/sites_sims/debug_warming.txt'), 'a') as pf:
                 print(ds_sub, file=pf)
             # append dataset to list for merging
             ds_list.append(ds_sub)
         except Exception as error:
-            with open(Path(config['output_dir'] + config['model_name'] + '/sites_sims/warming_debug.txt'), 'a') as pf:
+            with open(Path(config['output_dir'] + config['model_name'] + '/sites_sims/debug_warming.txt'), 'a') as pf:
                 print(error, file=pf)
             pass
     # recreate original dataarray shape
     ds_delta = xr.combine_by_coords(ds_list)
-    with open(Path(config['output_dir'] + config['model_name'] + '/sites_sims/warming_debug.txt'), 'a') as pf:
+    with open(Path(config['output_dir'] + config['model_name'] + '/sites_sims/debug_warming.txt'), 'a') as pf:
         print(ds_delta, file=pf)
     # add delta responses dataarrays to original dataset
     for var in keep_list:
@@ -3573,7 +3970,7 @@ def aggregate_models_warming(f):
             pass
     # merge dataset
     ds_sites = xr.merge(ds_list)
-    with open(Path(config['output_dir'] + '/combined/2000-2021_debug.txt'), 'a') as pf:
+    with open(Path(config['output_dir'] + '/combined/debug_2000-2021.txt'), 'a') as pf:
         print(ds_sites, file=pf)
     # write zarr
     out_file_zarr = config['output_dir'] + 'combined/WrPMIP_all_models_sites_2000-2021.zarr'
@@ -3613,7 +4010,7 @@ def aggregate_models_baseline(f):
     if len(ds_list) > 0:    
         # merge dataset
         ds_sites = xr.merge(ds_list)
-        with open(Path(config['output_dir'] + '/combined/1901-2000_debug.txt'), 'a') as pf:
+        with open(Path(config['output_dir'] + '/combined/debug_1901-2000.txt'), 'a') as pf:
             print(ds_sites, file=pf)
         # set zarr compression and encoding
         #compressor = zarr.Blosc(cname='zstd', clevel=3, shuffle=2)
@@ -3720,7 +4117,7 @@ def plotnine_lines(f, config, out_dir):
         elif var == 'q10':
             x_label = r'time (day)'
             y_label = r'q10 (unitless)'
-        with open(Path(config['output_dir'] + 'combined/line_debug.txt'), 'w') as pf:
+        with open(Path(config['output_dir'] + 'combined/debug_line.txt'), 'w') as pf:
             with pd.option_context('display.max_columns', None):
                 print('daily data:', file=pf)
                 print(pd_df.dtypes, file=pf)
@@ -3764,7 +4161,7 @@ def plotnine_lines(f, config, out_dir):
         p.save(filename=file_name+'.png', path=config['output_dir']+'combined/'+out_dir, dpi=300)
         p2.save(filename=file_name+'_annual.png', path=config['output_dir']+'combined/'+out_dir, dpi=300)
     except Exception as error:
-        with open(Path(config['output_dir'] + 'combined/line_debug.txt'), 'w') as pf:
+        with open(Path(config['output_dir'] + 'combined/debug_line.txt'), 'w') as pf:
             print(error, file=pf)
         
 
@@ -3907,7 +4304,7 @@ def plotnine_scatter(f, config, out_dir):
         pd_df_monthly.loc[pd_df_monthly['site'] == 'GRE-Disko',         'color'] = '#a64d79'#color_mapper(69.3)
         pd_df_monthly.loc[pd_df_monthly['site'] == 'CAN-DaringLake',    'color'] = '#85200c'#color_mapper(64.9)
     if groups == 'site':
-        with open(Path(config['output_dir'] + 'combined/scatter_debug.txt'), 'w') as pf:
+        with open(Path(config['output_dir'] + 'combined/debug_scatter.txt'), 'w') as pf:
             with pd.option_context('display.max_columns', None):
                 print('daily data:', file=pf)
                 print(pd_df.dtypes, file=pf)
@@ -3919,7 +4316,7 @@ def plotnine_scatter(f, config, out_dir):
     pd_df_scaled_daily = pd_df.loc[np.logical_and(pd_df.TotalResp > 0, pd_df.SoilTemp_10cm > 0)]
     pd_df_scaled_monthly = pd_df_monthly.loc[np.logical_and(pd_df_monthly.TotalResp > 0,pd_df_monthly.SoilTemp_10cm > 0)]
     if groups == 'site':
-        with open(Path(config['output_dir'] + 'combined/scatter_debug.txt'), 'a') as pf:
+        with open(Path(config['output_dir'] + 'combined/debug_scatter.txt'), 'a') as pf:
             with pd.option_context('display.max_columns', None):
                 print('scaled daily data subset:', file=pf)
                 print(pd_df_scaled_daily.dtypes, file=pf)
@@ -3946,7 +4343,7 @@ def plotnine_scatter(f, config, out_dir):
         except:
             continue
     if groups == 'site':
-        with open(Path(config['output_dir'] + 'combined/scatter_debug.txt'), 'a') as pf:
+        with open(Path(config['output_dir'] + 'combined/debug_scatter.txt'), 'a') as pf:
             with pd.option_context('display.max_columns', None):
                 print('scaled daily data subset:', file=pf)
                 print(pd_df_scaled_daily.dtypes, file=pf)
@@ -3974,7 +4371,7 @@ def plotnine_scatter(f, config, out_dir):
         for name, group in pd_df_scaled_daily.groupby('ID', observed=True):
             try:
                 if groups == 'site':
-                    with open(Path(config['output_dir'] + 'combined/scatter_debug.txt'), 'a') as pf:
+                    with open(Path(config['output_dir'] + 'combined/debug_scatter.txt'), 'a') as pf:
                         print(name, file=pf)
                         print(group, file=pf)
                 coefs = exp_regress(group['SoilTemp_10cm'], group[var])
@@ -3985,7 +4382,7 @@ def plotnine_scatter(f, config, out_dir):
         pd_df_scaled_daily['exp_pred'] = pd_df_scaled_daily['a']*np.exp(pd_df_scaled_daily['b']*pd_df_scaled_daily['SoilTemp_10cm']) 
         pd_df_scaled_daily = pd_df_scaled_daily.dropna()
         if groups == 'site':
-            with open(Path(config['output_dir'] + 'combined/scatter_debug.txt'), 'a') as pf:
+            with open(Path(config['output_dir'] + 'combined/debug_scatter.txt'), 'a') as pf:
                 with pd.option_context('display.max_columns', None):
                     print('daily scale factor:', file=pf)
                     print(pd_df_scaled_daily, file=pf)
@@ -3995,7 +4392,7 @@ def plotnine_scatter(f, config, out_dir):
         for name, group in pd_df_scaled_monthly.groupby('ID', observed=True):
             try:
                 if groups == 'site':
-                    with open(Path(config['output_dir'] + 'combined/scatter_debug.txt'), 'a') as pf:
+                    with open(Path(config['output_dir'] + 'combined/debug_scatter.txt'), 'a') as pf:
                         print(name, file=pf)
                         print(group, file=pf)
                 coefs = exp_regress(group['SoilTemp_10cm'], group[var])
@@ -4008,7 +4405,7 @@ def plotnine_scatter(f, config, out_dir):
         #pd_df['exp_pred'] = np.nan
         #pd_df_monthly['exp_pred'] = np.nan
     if groups == 'site':
-        with open(Path(config['output_dir'] + 'combined/scatter_debug.txt'), 'a') as pf:
+        with open(Path(config['output_dir'] + 'combined/debug_scatter.txt'), 'a') as pf:
             with pd.option_context('display.max_columns', None):
                 print('scaled daily data subset:', file=pf)
                 print(pd_df_scaled_daily.dtypes, file=pf)
@@ -4295,7 +4692,7 @@ def process_ted_data(config):
     # scale and change sign
     pd_obs['obs_ALT'] = (pd_obs['obs_ALT']/100)*(-1)
     pd_obs['obs_WTD'] = (pd_obs['obs_WTD']/100)*(-1)
-    with open(Path('/projects/warpmip/shared/ted_data/ted_debug.txt'), 'w') as pf:
+    with open(Path('/projects/warpmip/shared/ted_data/debug_ted.txt'), 'w') as pf:
         with pd.option_context('display.max_columns', None, 'display.max_rows', 20):
             print('Healy observations after subset, hamonization:', file=pf)
             print(pd_obs.dtypes, file=pf)
@@ -4304,21 +4701,21 @@ def process_ted_data(config):
     pd_obs = pd_obs.set_index(['time','plot','sim'])
     # remove duplicated values (all from 2018) some error in heidis code 
     pd_obs = pd_obs[~pd_obs.index.duplicated()]
-    with open(Path('/projects/warpmip/shared/ted_data/ted_debug.txt'), 'a') as pf:
+    with open(Path('/projects/warpmip/shared/ted_data/debug_ted.txt'), 'a') as pf:
         with pd.option_context('display.max_columns', None, 'display.max_rows', 20):
             print('duplicated removal:', file=pf)
             print(pd_obs.dtypes, file=pf)
             print(pd_obs, file=pf)
     # create datetime index
     pd_obs = pd_obs.reset_index()
-    with open(Path('/projects/warpmip/shared/ted_data/ted_debug.txt'), 'a') as pf:
+    with open(Path('/projects/warpmip/shared/ted_data/debug_ted.txt'), 'a') as pf:
         with pd.option_context('display.max_columns', None, 'display.max_rows', 100):
             print('reset index:', file=pf)
             print(pd_obs.dtypes, file=pf)
             print(pd_obs, file=pf)
     pd_obs['time'] = pd.to_datetime(pd_obs['time'])
     pd_obs['time'] = pd_obs['time'].dt.strftime('%Y-%m-%d')
-    with open(Path('/projects/warpmip/shared/ted_data/ted_debug.txt'), 'a') as pf:
+    with open(Path('/projects/warpmip/shared/ted_data/debug_ted.txt'), 'a') as pf:
         with pd.option_context('display.max_columns', None, 'display.max_rows', 100):
             print('datetime and string edit:', file=pf)
             print(pd_obs.dtypes, file=pf)
@@ -4326,27 +4723,27 @@ def process_ted_data(config):
     datetime_index = pd.DatetimeIndex(pd_obs['time'])
     pd_obs['month'] = datetime_index.month
     pd_obs['year'] = datetime_index.year 
-    with open(Path('/projects/warpmip/shared/ted_data/ted_debug.txt'), 'a') as pf:
+    with open(Path('/projects/warpmip/shared/ted_data/debug_ted.txt'), 'a') as pf:
         with pd.option_context('display.max_columns', None, 'display.max_rows', 100):
             print('month and year added:', file=pf)
             print(pd_obs.dtypes, file=pf)
             print(pd_obs, file=pf)
     pd_obs = pd_obs.set_index(datetime_index)
     pd_obs = pd_obs.drop(columns=['time'])
-    with open(Path('/projects/warpmip/shared/ted_data/ted_debug.txt'), 'a') as pf:
+    with open(Path('/projects/warpmip/shared/ted_data/debug_ted.txt'), 'a') as pf:
         with pd.option_context('display.max_columns', None, 'display.max_rows', 100):
             print('set index with time:', file=pf)
             print(pd_obs.dtypes, file=pf)
             print(pd_obs, file=pf)
     pd_obs = pd_obs.loc[(pd_obs.index > datetime(year=2009,month=1,day=1)) & (pd_obs.index < datetime(year=2021,month=12,day=31))]
-    with open(Path('/projects/warpmip/shared/ted_data/ted_debug.txt'), 'a') as pf:
+    with open(Path('/projects/warpmip/shared/ted_data/debug_ted.txt'), 'a') as pf:
         with pd.option_context('display.max_columns', None, 'display.max_rows', 100):
             print('time subset to 2009-2021:', file=pf)
             print(pd_obs.dtypes, file=pf)
             print(pd_obs, file=pf)
     pd_obs = pd_obs.reset_index()
     pd_obs = pd_obs.set_index(['time','plot','sim'])
-    with open(Path('/projects/warpmip/shared/ted_data/ted_debug.txt'), 'a') as pf:
+    with open(Path('/projects/warpmip/shared/ted_data/debug_ted.txt'), 'a') as pf:
         with pd.option_context('display.max_columns', None, 'display.max_rows', 100):
             print('index reset:', file=pf)
             print(pd_obs.dtypes, file=pf)
@@ -4362,7 +4759,7 @@ def process_ted_data(config):
         'obs_WTD': 'mean',
         'obs_ALT': 'max'})
     pd_obs_monthly = pd_obs_monthly.reset_index()
-    with open(Path('/projects/warpmip/shared/ted_data/ted_debug.txt'), 'a') as pf:
+    with open(Path('/projects/warpmip/shared/ted_data/debug_ted.txt'), 'a') as pf:
         with pd.option_context('display.max_columns', None, 'display.max_rows', 100):
             print('Healy observations month/plot/treatment aggregation:', file=pf)
             print(pd_obs_monthly.dtypes, file=pf)
@@ -4374,7 +4771,7 @@ def process_ted_data(config):
         'obs_WTD': 'mean',
         'obs_ALT': 'mean'})
     pd_obs_monthly = pd_obs_monthly.reset_index()
-    with open(Path('/projects/warpmip/shared/ted_data/ted_debug.txt'), 'a') as pf:
+    with open(Path('/projects/warpmip/shared/ted_data/debug_ted.txt'), 'a') as pf:
         with pd.option_context('display.max_columns', None, 'display.max_rows', 100):
             print('Healy observations month/plot/treatment aggregation:', file=pf)
             print(pd_obs_monthly.dtypes, file=pf)
@@ -4386,7 +4783,7 @@ def process_ted_data(config):
         'obs_WTD':'mean',
         'obs_ALT':'mean'})
     pd_obs_monthly_mean = pd_obs_monthly_mean.reset_index()
-    with open(Path('/projects/warpmip/shared/ted_data/ted_debug.txt'), 'a') as pf:
+    with open(Path('/projects/warpmip/shared/ted_data/debug_ted.txt'), 'a') as pf:
         with pd.option_context('display.max_columns', None):
             print('Healy observations monthly mean:', file=pf)
             print(pd_obs_monthly_mean.dtypes, file=pf)
@@ -4404,14 +4801,14 @@ def process_ted_data(config):
         'obs_SoilTemp':'obs_SoilTemp_std',
         'obs_WTD':'obs_WTD_std',
         'obs_ALT':'obs_ALT_std'})
-    with open(Path('/projects/warpmip/shared/ted_data/ted_debug.txt'), 'a') as pf:
+    with open(Path('/projects/warpmip/shared/ted_data/debug_ted.txt'), 'a') as pf:
         with pd.option_context('display.max_columns', None):
             print('Healy observations monthly std:', file=pf)
             print(pd_obs_monthly_std.dtypes, file=pf)
             print(pd_obs_monthly_std, file=pf)
     pd_obs_monthly_mean = pd.merge(pd_obs_monthly_mean, pd_obs_monthly_std, on=['month','sim'])
     #pd_obs_monthly_mean['month'] = pd.DatetimeIndex(pd_obs_monthly_mean['time']).month
-    with open(Path('/projects/warpmip/shared/ted_data/ted_debug.txt'), 'a') as pf:
+    with open(Path('/projects/warpmip/shared/ted_data/debug_ted.txt'), 'a') as pf:
         with pd.option_context('display.max_columns', None):
             print('Healy observations monthly mean and std merged:', file=pf)
             print(pd_obs_monthly_mean.dtypes, file=pf)
@@ -4448,7 +4845,7 @@ def process_ted_data(config):
     pd_obs_annual_mean['site'] = 'USA-EightMileLake'
     # set index as time
     # print out data
-    with open(Path('/projects/warpmip/shared/ted_data/ted_debug.txt'), 'a') as pf:
+    with open(Path('/projects/warpmip/shared/ted_data/debug_ted.txt'), 'a') as pf:
         with pd.option_context('display.max_columns', None):
             print('Healy observations monthly mean:', file=pf)
             print(pd_obs_monthly_mean, file=pf)
@@ -4477,7 +4874,7 @@ def schadel_plots_env(var, config, out_dir):
     obs_processed_file_annual = '/projects/warpmip/shared/ted_data/USA-EML_processed_data_annual.csv'
     pd_obs_monthly = pd.read_csv(obs_processed_file_monthly)
     pd_obs_annual = pd.read_csv(obs_processed_file_annual, parse_dates=['time'])
-    with open(Path(config['output_dir'] + '/combined/schadel_debug'+var+'.txt'), 'w') as pf:
+    with open(Path(config['output_dir'] + '/combined/debug_schadel_'+var+'.txt'), 'w') as pf:
         with pd.option_context('display.max_columns', 10):
             print('monthly obs subset:', file=pf)
             print(pd_obs_monthly, file=pf)
@@ -4489,7 +4886,7 @@ def schadel_plots_env(var, config, out_dir):
     # subsample xarray dataset
     da = ds[var].sel(time=slice('2000-01-01','2020-12-31'))
     #da = da.sel(time=is_summer(da['time.month']))
-    with open(Path(config['output_dir'] + '/combined/schadel_debug'+var+'.txt'), 'a') as pf:
+    with open(Path(config['output_dir'] + '/combined/debug_schadel_'+var+'.txt'), 'a') as pf:
         with pd.option_context('display.max_columns', 10):
             print('summer data subset:', file=pf)
             print(da, file=pf)
@@ -4502,13 +4899,13 @@ def schadel_plots_env(var, config, out_dir):
     if var == 'TotalResp':
         da_monthly = ds.resample(time='M').sum('time')
         da_monthly = da_monthly.groupby('time.month').mean('time')
-    with open(Path(config['output_dir'] + '/combined/schadel_debug'+var+'.txt'), 'a') as pf:
+    with open(Path(config['output_dir'] + '/combined/debug_schadel_'+var+'.txt'), 'a') as pf:
         with pd.option_context('display.max_columns', 10):
             print('variable resampled to monthly timestep:', file=pf)
             print(da_monthly, file=pf)
     # monthly data
     pd_df_monthly = da_monthly.to_dataframe()
-    with open(Path(config['output_dir'] + '/combined/schadel_debug'+var+'.txt'), 'a') as pf:
+    with open(Path(config['output_dir'] + '/combined/debug_schadel_'+var+'.txt'), 'a') as pf:
         with pd.option_context('display.max_columns', 10):
             print('pandas dataframe conversion:', file=pf)
             print(pd_df_monthly, file=pf)
@@ -4530,7 +4927,7 @@ def schadel_plots_env(var, config, out_dir):
     pd_df_annual = pd_df_annual.set_index('ID', drop=False)
     pd_df_annual[var].replace([np.inf, -np.inf], np.nan, inplace=True)
     pd_df_annual = pd_df_annual.dropna()
-    with open(Path(config['output_dir'] + '/combined/schadel_debug'+var+'.txt'), 'a') as pf:
+    with open(Path(config['output_dir'] + '/combined/debug_schadel_'+var+'.txt'), 'a') as pf:
         with pd.option_context('display.max_columns', 10):
             print('pandas dataframe conversion:', file=pf)
             print(pd_df_annual.dtypes, file=pf)
