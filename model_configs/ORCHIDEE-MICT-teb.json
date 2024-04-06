@@ -37,10 +37,10 @@
 	"nc_read": {
 		"engine": "netcdf4",
 		"b1_chunks": {
-			"time": 40
+			"time": 120
 		},
 		"b2_chunks": {
-			"time": 20  
+			"time": 73  
 		}
 	},
 	"nc_write": {

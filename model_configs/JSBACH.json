@@ -38,7 +38,7 @@
 		"engine": "netcdf4",
 		"b1_chunks": {},
 		"b2_chunks": {
-			"time": 20 
+			"time": 73 
 		}
 	},
 	"nc_write": {
