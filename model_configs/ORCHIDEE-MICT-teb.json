@@ -17,7 +17,6 @@
 	"has_b2": "True",
 	"has_otc": "True",
 	"has_sf": "True",
-	"output_dir": "/projects/warpmip/shared/processed_outputs/",
 	"subset_vars": [
 		"rh",
 		"ra"

@@ -89,7 +89,7 @@ def rmv_dir(string):
             if os.path.islink(string):
                 os.unlink(string)
             else:
-                shutil.rmtree(string) #ignore_errors=True)
+                shutil.rmtree(string)
     except Exception as error:
         print(error)
         pass
@@ -100,9 +100,9 @@ def read_config(sys_argv_file):
         config = json.load(f)
     return config
 
-# function to extract first position of all sublists within a list
-def extract_sublist(lst):
-    return [item[0] for item in lst]
+# function to extract position of all sublists within a list
+def extract_sublist(lst, position):
+    return [item[position] for item in lst]
 
 # convert RH to SH; RH (%; 0-100), tair (kelvin), pressure (Pa)
 def specific_humidity(rh, tair, pres):
@@ -507,8 +507,6 @@ def full_reanalysis_list(config_file):
     return file_info
 
 # subset original dswrf CRUJRAv2.3_updated files (to check on diurnal phase issue)
-# CRUJRA uses UTC 0 time (though not labeled or described anywhere I can find)
-# this means the phase of the diurnal cycle is off by the GMT offset from the prime meridian
 def raw_dswrf_list(config_file):
     # load site's config information
     config = read_config(config_file)
@@ -538,7 +536,7 @@ def subset_raw_dswrf(f):
     # move and rotate lon data from 'xc' dataarray into dataset coordinate
     ds_mask = ds_mask.assign_coords({'lon': (((ds_mask.xc.values[0] + 180) % 360) - 180)})
     # move and subset lat data from 'yc' dataarray into dataset coordinate
-    ds_mask = ds_mask.assign_coords({'lat': extract_sublist(ds_mask.yc.values)})
+    ds_mask = ds_mask.assign_coords({'lat': extract_sublist(ds_mask.yc.values, 0)})
     # sort the lon coornidate into acending order for xarray to work
     ds_mask = ds_mask.sortby('lon')
     # change land mask of 1/0s into boolean for subsetting
@@ -2940,19 +2938,17 @@ def climate_pdf_report(config_list):
 ###########################################################################################################################i
 
 # remove previous cleaned model simulation folders
-def regional_dir_prep(f):
-    # read config file
-    config = read_config(f)
+def regional_dir_prep(config):
     # remake directory per folder 
-    Path(config['output_dir']+config['model_name']).mkdir(parents=True, exist_ok=True)
-    Path(config['output_dir']+config['model_name']).chmod(0o762)
+    Path(config['output_dir'] + 'zarr_output/' + config['model_name']).mkdir(parents=True, exist_ok=True)
+    Path(config['output_dir'] + 'zarr_output/' + config['model_name']).chmod(0o762)
 
 # collect file lists per model and simulations based on configuration files
-def regional_simulation_files(f):
+def regional_simulation_files(input_list):
     # read config file
-    config = read_config(f[0])
+    config = input_list[0]
     # read the simulation type
-    sim_type = f[1]
+    sim_type = input_list[1]
     # read all CRUJRA input file names from reanalysis directory
     dir_name = sim_type + '_dir'
     sim_str = sim_type + '_str'
@@ -2967,7 +2963,7 @@ def regional_simulation_files(f):
         sim_files4 = sorted(glob.glob("{}*{}*.nc".format(config[dir_name], 'daily_water')))
         sim_files = [sim_files1, sim_files2, sim_files3, sim_files4]
     # loop through files in reanalysis archive linking config, in, out files
-    merged_file = config['output_dir'] + config['model_name'] + '/WrPMIP_Pan-Arctic_' + config['model_name'] + '_' + sim_type + '.zarr'
+    merged_file = config['output_dir'] + 'zarr_output/' + config['model_name'] + '/WrPMIP_Pan-Arctic_' + config['model_name'] + '_' + sim_type + '.zarr'
     # combine processing info into list
     info_list = [config, sim_type, sim_files, merged_file]
     return info_list 
@@ -3034,20 +3030,20 @@ def preprocess_var(ds, config):
     return ds
 
 # merge files depending on simulation outputs
-def process_simulation_files(f, top_config):
+def process_simulation_files(input_list, top_config):
     # read in config, input files, and output file
-    config = f[0]
-    sim_type = f[1]
-    sim_files = f[2]
-    out_file = f[3]
+    config = input_list[0]
+    sim_type = input_list[1]
+    sim_files = input_list[2]
+    out_file = input_list[3]
     # check if simulation dataset exists for model
     data_check = 'has_' + sim_type
     # context manager to keep dask from auto-rechunking
     with dask.config.set(**{'array.slicing.split_large_chunks': False}):
         # check if dataset exists
         if config[data_check] == "True":
-            with open(Path(config['output_dir'] + config['model_name'] + '/debug_' + sim_type + '.txt'), 'w') as pf:
-                print(f, file=pf)
+            with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'w') as pf:
+                print(input_list, file=pf)
             if sim_type == 'b1':
                 chunk_read = config['nc_read']['b1_chunks']
                 zarr_chunk_out = 144
@@ -3082,7 +3078,7 @@ def process_simulation_files(f, top_config):
                         # choose arctic crass pft to reduce dimensions of TotalResp
                         ds = ds.sel(pft=3, method="nearest")
                         ds = ds.drop_vars('pft')
-                        with open(Path(config['output_dir'] + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
+                        with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
                             print(ds, file=pf)
                     else:
                         # open using mfdataset and merge using combine_by_coords
@@ -3133,7 +3129,7 @@ def process_simulation_files(f, top_config):
                     ds4 = xr.open_mfdataset(sim_files[3], parallel=True, engine=engine, chunks=chunk_read, preprocess=partial_ecosys, **kwargs)
                     # merge TotalResp and SoilTemps
                     ds = xr.merge([ds1,ds2,ds3,ds4])
-                    with open(Path(config['output_dir'] + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
+                    with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
                         print(ds, file=pf)
                     # loop through soil layer dataarrays, for each soil layer add a depth coord and expand dim
                     ds_list = []
@@ -3151,13 +3147,13 @@ def process_simulation_files(f, top_config):
                         layer_iter += 1
                     # merge all the SoilTemp layers into 4D dataarray
                     ds_soiltemp = xr.combine_by_coords(ds_list)
-                    with open(Path(config['output_dir'] + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
+                    with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
                         print(ds, file=pf)
                     ds = ds.drop_vars(layers)
-                    with open(Path(config['output_dir'] + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
+                    with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
                         print(ds, file=pf)
                     ds = xr.merge([ds, ds_soiltemp])
-                    with open(Path(config['output_dir'] + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
+                    with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
                         print(ds, file=pf)
                     # add long name and unit attributes
                     ds['SoilTemp'].attrs['long_name'] = 'Soil temperature by layer'
@@ -3168,16 +3164,16 @@ def process_simulation_files(f, top_config):
                     #ds = ds.chunk({'time': 300, 'SoilDepth': -1, 'lat': -1, 'lon': -1})
                     # subset to variables of interest
                     ds = ds[config['subset_vars']]
-                    with open(Path(config['output_dir'] + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
+                    with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
                         print(ds, file=pf)
                     # change data variables to float32 to save space
                     ds = ds.astype('float32')
-                    with open(Path(config['output_dir'] + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
+                    with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
                         print(ds, file=pf)
                     # assign encoding fillvalues
                     for var in ds.data_vars:
                         ds[var].encoding['_FillValue'] = config['nc_write']['fillvalue']
-                    with open(Path(config['output_dir'] + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
+                    with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
                         print(ds, file=pf)
                         print(ds['SoilTemp'].encoding, file=pf)
                         print(ds['TotalResp'].encoding, file=pf)
@@ -3238,7 +3234,7 @@ def process_simulation_files(f, top_config):
             if config['model_name'] in ['ELM2-NGEE', 'ecosys']:
                 ds = ds.assign_coords({'lon': (ds.lon % 360)})
                 ds = ds.sortby('lon', ascending=True)
-                with open(Path(config['output_dir'] + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
+                with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
                     print('adjusted lon index', file=pf)
                     print(ds['SoilTemp'].encoding, file=pf)
                     print(ds['TotalResp'].encoding, file=pf)
@@ -3269,7 +3265,7 @@ def process_simulation_files(f, top_config):
             for var in missing_vars:
                 ds[var] = ds['TotalResp'].copy(deep=True)
                 ds[var].loc[:] = np.nan
-            with open(Path(config['output_dir'] + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
+            with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
                 print('missing vars added with all nans:',file=pf)
                 print(missing_vars, file=pf)
                 print(ds, file=pf)
@@ -3280,7 +3276,7 @@ def process_simulation_files(f, top_config):
             # rescale from g C m-2 s-1 to g C m-2 day-1
             ds['TotalResp'] = ds['TotalResp'] * 86400  
             # print out combined dataset for debugging
-            with open(Path(config['output_dir'] + '/debug_process_simulation.txt'), 'a') as pf:
+            with open(Path(config['output_dir'] + 'zarr_output/debug_process_simulation.txt'), 'a') as pf:
                 with np.printoptions(threshold=np.inf):
                     print(config['model_name'] + ':\n', file=pf)
                     print('Combined dataset before rechunking', file=pf)
@@ -3297,8 +3293,8 @@ def process_simulation_files(f, top_config):
             if config['model_name'] == 'CLM5':
                 lat_df = ds['lat'].to_dataframe()
                 lon_df = ds['lon'].to_dataframe()
-                lat_df.to_csv(config['output_dir']+'clm5_lat.csv')
-                lon_df.to_csv(config['output_dir']+'clm5_lon.csv')
+                lat_df.to_csv(config['output_dir']+'zarr_output/clm5_lat.csv')
+                lon_df.to_csv(config['output_dir']+'zarr_output/clm5_lon.csv')
             # set zarr compression and encoding
             compress = Zstd(level=6) #, shuffle=Blosc.BITSHUFFLE)
             # clear all chunk and fill value encoding/attrs
@@ -3321,7 +3317,7 @@ def process_simulation_files(f, top_config):
                 'lat': -1,
                 'lon': -1}
             ds = ds.chunk(dim_chunks) 
-            with open(Path(config['output_dir'] + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
+            with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
                 print('data rechunked',file=pf)
                 print(ds, file=pf)
             encode = {var: {'_FillValue': np.nan, 'compressor': compress} for var in ds.data_vars}
@@ -3332,7 +3328,7 @@ def process_simulation_files(f, top_config):
             #encode = {var: comp for var in ds.data_vars}
             # output to zarr file
             ds.to_zarr(out_file, encoding=encode, mode="w")
-            with open(Path(config['output_dir'] + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
+            with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
                 print('encoded output using:', file=pf)
                 print(encode, file=pf)
             # close file connections
@@ -3343,19 +3339,19 @@ def process_simulation_files(f, top_config):
                 pass
 
 # output variable subset netcdf
-def aggregate_harmonize_regional_sims(f):
-    # read model config
-    config = read_config(f)
+def aggregate_regional_sims(config):
     # set output file location
-    with open(Path(config['output_dir'] + 'debug_agg_sims.txt'), 'w') as pf:
+    with open(Path(config['output_dir'] + 'zarr_output/debug_agg_sims.txt'), 'w') as pf:
         print(config, file=pf)
     # open b2, otc, sf zarr files, add simulation dimension, create list to merge
     ds_list = []
     for sim in ['b2','otc','sf']:
         try:
             # create name of file to open for model/sim zarr files
-            ds_file = config['output_dir'] + config['model_name'] + '/WrPMIP_Pan-Arctic_' + config['model_name'] + '_' + sim + '.zarr'
-            out_file = config['output_dir'] + config['model_name'] + '/WrPMIP_Pan-Arctic_' + config['model_name'] + '_sims_merged.zarr'
+            ds_file = config['output_dir'] + 'zarr_output/' + config['model_name'] + \
+                                '/WrPMIP_Pan-Arctic_' + config['model_name'] + '_' + sim + '.zarr'
+            out_file = config['output_dir'] + 'zarr_output/' + config['model_name'] + \
+                                '/WrPMIP_Pan-Arctic_' + config['model_name'] + '_sims_merged.zarr'
             # open model file for current simulation
             ds = xr.open_zarr(ds_file, chunks='auto', chunked_array_type='dask', use_cftime=True, mask_and_scale=False) 
             # assign simulation diension
@@ -3367,11 +3363,11 @@ def aggregate_harmonize_regional_sims(f):
             with open(Path(config['output_dir'] + 'debug_agg_sims.txt'), 'a') as pf:
                 print(error, file=pf)
             pass
-    with open(Path(config['output_dir'] + 'debug_agg_sims.txt'), 'a') as pf:
+    with open(Path(config['output_dir'] + 'zarr_output/debug_agg_sims.txt'), 'a') as pf:
         print('dataset list created', file=pf)
     # merge dataset
     ds_sims = xr.concat(ds_list, dim='sim')
-    with open(Path(config['output_dir'] + 'debug_agg_sims.txt'), 'a') as pf:
+    with open(Path(config['output_dir'] + 'zarr_output/debug_agg_sims.txt'), 'a') as pf:
         print('new model chunks:', file=pf)
         print(ds_sims['SoilTemp'].encoding['chunks'], file=pf)
     # set zarr compression and encoding
@@ -3402,28 +3398,28 @@ def aggregate_harmonize_regional_sims(f):
     ds_sims.to_zarr(out_file, encoding=encode, mode="w")
 
 # output final harmonized pan-arctic regional database
-def harmonize_regional_models(f):
-    # load config into list for each model
-    config = read_config(f)
+def harmonize_regional_models(config):
     # context manager to keep dask from auto-rechunking
     with dask.config.set(**{'array.slicing.split_large_chunks': False}):
         try:
             # create name of file to open for each model
-            ds_file = config['output_dir'] + config['model_name'] + '/WrPMIP_Pan-Arctic_' + config['model_name'] + '_sims_merged.zarr'
-            out_file = config['output_dir'] + config['model_name'] + '/WrPMIP_Pan-Arctic_' + config['model_name'] + '_sims_harmonized.zarr'
+            ds_file = config['output_dir'] + 'zarr_output/' + config['model_name'] + \
+                        '/WrPMIP_Pan-Arctic_' + config['model_name'] + '_sims_merged.zarr'
+            out_file = config['output_dir'] + 'zarr_output/' + config['model_name'] + \
+                        '/WrPMIP_Pan-Arctic_' + config['model_name'] + '_sims_harmonized.zarr'
             # open model zarr
             ds = xr.open_zarr(ds_file, chunks='auto', chunked_array_type='dask', use_cftime=True, mask_and_scale=False) 
             # assign model names as new dimension to merge on
             ds = ds.assign_coords({'model': config['model_name']})
             ds = ds.expand_dims('model')
         except Exception as error:
-            with open(Path(config['output_dir'] + config['model_name'] + '/debug_harmonized_model.txt'), 'a') as pf:
+            with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_harmonized_model.txt'), 'a') as pf:
                 print(error, file=pf)
             pass
-        clm_lon = pd.read_csv(config['output_dir']+'clm5_lon.csv')['lon']
-        clm_lat = pd.read_csv(config['output_dir']+'clm5_lat.csv')['lat']
+        clm_lon = pd.read_csv(config['output_dir']+'zarr_output/clm5_lon.csv')['lon']
+        clm_lat = pd.read_csv(config['output_dir']+'zarr_output/clm5_lat.csv')['lat']
         clm5_soil_depths = np.array([0.01,0.04,0.09,0.16,0.26,0.4,0.58,0.8,1.06,1.36,1.7,2.08,2.5,2.99,3.58, \
-                            4.27,5.06,5.95,6.94,8.03,9.795,13.328,19.483,28.871,41.998])
+                                     4.27,5.06,5.95,6.94,8.03,9.795, 13.32777, 19.48313, 28.87072, 41.99844])
         # subset/inpterplote models to clm5 grid/extent
         if config['model_name'] not in ['CLM5','CLM5-ExIce']:
             # read in clm lat/lon, make comparison da, interp_like to match grid size/extent
@@ -3441,7 +3437,7 @@ def harmonize_regional_models(f):
         # replace soilDepth dim with integers
         ds = ds.assign_coords({'SoilDepth': range(1,len(clm5_soil_depths)+1)})
         # check harmonzied dim
-        with open(Path(config['output_dir'] + config['model_name'] + '/debug_harmonized_model.txt'), 'a') as pf:
+        with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_harmonized_models.txt'), 'a') as pf:
             with np.printoptions(threshold=np.inf):
                 print(config['model_name'] + ':\n', file=pf)
                 print('Combined dataset before rechunking', file=pf)
@@ -3487,30 +3483,29 @@ def harmonize_regional_models(f):
         ds.to_zarr(out_file, encoding=encode, mode="w")
 
 # output variable subset netcdf
-def aggregate_regional_models(f):
+def aggregate_regional_models(config_list):
     # context manager to not change chunk sizes
     with dask.config.set(**{'array.slicing.split_large_chunks': False}):
         # open each models zarr file and append to list for merge 
         ds_list = []
-        for config_file in f:
+        for config in config_list:
             try:
-                # open config file
-                config = read_config(config_file)
                 # create name of file to open for model/sim zarr files
-                ds_file = config['output_dir'] + config['model_name'] + '/WrPMIP_Pan-Arctic_' + config['model_name'] + '_sims_harmonized.zarr'
+                ds_file = config['output_dir'] + 'zarr_output/' + config['model_name'] + \
+                            '/WrPMIP_Pan-Arctic_' + config['model_name'] + '_sims_harmonized.zarr'
                 # open model file for current simulation
                 ds = xr.open_zarr(ds_file, chunks='auto', chunked_array_type='dask', use_cftime=True, mask_and_scale=False) 
                 # append dataset to list for later merging
                 ds_list.append(ds)
             except Exception as error:
-                with open(Path(config['output_dir'] + 'debug_agg_models.txt'), 'a') as pf:
+                with open(Path(config['output_dir'] + 'zarr_output/debug_agg_harm_models.txt'), 'a') as pf:
                     print(error, file=pf)
                 pass
-        with open(Path(config['output_dir'] + 'debug_agg_models.txt'), 'a') as pf:
+        with open(Path(config['output_dir'] + 'zarr_output/debug_agg_harm_models.txt'), 'a') as pf:
             print('model list created', file=pf)
         # merge dataset
         ds = xr.concat(ds_list, dim='model')
-        with open(Path(config['output_dir'] + 'debug_agg_models.txt'), 'a') as pf:
+        with open(Path(config['output_dir'] + 'zarr_output/debug_agg_harm_models.txt'), 'a') as pf:
             print('new model chunks:', file=pf)
             print(ds['SoilTemp'].encoding['chunks'], file=pf)
         # set zarr compression and encoding
@@ -3539,22 +3534,22 @@ def aggregate_regional_models(f):
         ds = ds.chunk(dim_chunks) 
         encode = {var: {'_FillValue': np.nan, 'compressor': compress} for var in ds.data_vars}
         # output regional zarr for each model with b2,otc,sf added as siulation dimension 
-        out_file = '/projects/warpmip/shared/processed_outputs/WrPMIP_Pan-Arctic_models_harmonized.zarr'
+        out_file = config['output_dir'] + 'zarr_output/WrPMIP_Pan-Arctic_models_harmonized.zarr'
         ds.to_zarr(out_file, encoding=encode, mode="w")
 
 # open final zarr to create netcdfs
 def regional_model_zarrs_to_netcdfs(input_list):
     # parse inputs
-    f = input_list[0]
+    config = input_list[0]
     year = input_list[1]
-    # read config file
-    config = read_config(f)
     # make start/end date from year
     start_date = str(year)+'-01-01'
     end_date = str(year)+'-12-31'
     # make read in and out file names
-    zarr_in = config['output_dir'] + config['model_name'] + '/WrPMIP_Pan-Arctic_' + config['model_name'] + '_sims_harmonized.zarr'
-    ncdf_out = config['output_dir'] + config['model_name'] + '/WrPMIP_Pan-Arctic_' + config['model_name'] + '_sims_harmonized_' + str(year) + '.nc'
+    zarr_in = config['output_dir'] + 'zarr_output/' + config['model_name'] + \
+                '/WrPMIP_Pan-Arctic_' + config['model_name'] + '_sims_harmonized.zarr'
+    ncdf_out = config['output_dir'] + 'netcdf_output/' + config['model_name'] + \
+                '/WrPMIP_Pan-Arctic_' + config['model_name'] + '_sims_harmonized_' + str(year) + '.nc'
     # open zarr file
     ds = xr.open_zarr(zarr_in, chunks='auto', chunked_array_type='dask', use_cftime=True, mask_and_scale=False) 
     # clear all chunk and fill value encoding/attrs
@@ -3588,19 +3583,19 @@ def regional_model_zarrs_to_netcdfs(input_list):
 # final zarr to netcdf
 def harmonized_model_zarr_to_monthly_netcdfs(input_list): 
     # parse inputs
-    f = input_list[0]
+    config = input_list[0]
     year = input_list[1]
     month = input_list[2]
-    # read config file
-    config = read_config(f)
     # make start/end date from year
     m = [0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
     day = m[month]
     start_date = str(year) + '-' + str(month) + '-01'
     end_date = str(year) + '-' + str(month) + '-' + str(day)
     # make read in and out file names
-    zarr_in = config['output_dir'] + config['model_name'] + '/WrPMIP_Pan-Arctic_' + config['model_name'] + '_sims_harmonized.zarr'
-    ncdf_out = config['output_dir'] + '/netcdf_output/WrPMIP_Pan-Arctic_models_harmonized_'+str(year)+'_'+str(month)+'.nc'
+    zarr_in = config['output_dir'] + 'zarr_output/' + config['model_name'] + '/WrPMIP_Pan-Arctic_' + config['model_name'] + \
+                '_sims_harmonized.zarr'
+    ncdf_out = config['output_dir'] + 'netcdf_output/WrPMIP_Pan-Arctic_models_harmonized/WrPMIP_Pan-Arctic_models_harmonized_' \
+                +str(year)+'_'+str(month)+'.nc'
     # open zarr file
     ds = xr.open_zarr(zarr_in, chunks='auto', chunked_array_type='dask', use_cftime=True, mask_and_scale=False) 
     # clear all chunk and fill value encoding/attrs
@@ -3640,10 +3635,10 @@ def regional_model_graphs(input_list):
     # soil level
     soil = input_list[2]
     # open zarr file
-    zarr_file = '/projects/warpmip/shared/processed_outputs/WrPMIP_Pan-Arctic_models_harmonized.zarr'
+    zarr_file = '/projects/warpmip/shared/processed_outputs/regional/zarr_output/WrPMIP_Pan-Arctic_models_harmonized.zarr'
     ds = xr.open_zarr(zarr_file, chunks='auto', chunked_array_type='dask', use_cftime=True, mask_and_scale=False) 
     # select soil layer
-    with open(Path('/projects/warpmip/shared/processed_outputs/debug_cartopy.txt'), 'a') as pf:
+    with open(Path('/projects/warpmip/shared/processed_outputs/regional/figures/debug_cartopy.txt'), 'a') as pf:
         print('data loaded', file=pf)
         print(ds, file=pf)
     # change to -180/180 coords
@@ -3658,7 +3653,7 @@ def regional_model_graphs(input_list):
     ds_annual = ds.isel(SoilDepth=soil).mean(dim=['time','model'], skipna=True)
     ds_summer = ds.isel(SoilDepth=soil).sel(time=is_summer(ds['time.month'])).mean(dim=['time','model'], skipna=True)
     ds_winter = ds.isel(SoilDepth=soil).sel(time=is_winter(ds['time.month'])).mean(dim=['time','model'], skipna=True)
-    with open(Path('/projects/warpmip/shared/processed_outputs/debug_cartopy.txt'), 'a') as pf:
+    with open(Path('/projects/warpmip/shared/processed_outputs/regional/figures/debug_cartopy.txt'), 'a') as pf:
         print('soil subset with sel', file=pf)
         print(ds, file=pf)
         print(ds_annual, file=pf)
@@ -3679,8 +3674,12 @@ def regional_model_graphs(input_list):
         ax.set_boundary(circle, transform=ax.transAxes)
     for sim in ds_annual['sim'].values:
         for season in [[ds_annual,'annual'], [ds_summer,'summer'], [ds_winter,'winter']]:
+            # make necessary folders
+            Path('/projects/warpmip/shared/processed_outputs/regional/figures/' + graph_type).mkdir(parents=True, exist_ok=True)
+            Path('/projects/warpmip/shared/processed_outputs/regional/figures/' + graph_type).chmod(0o762)
             # create outfile for each combination
-            out_file = '/projects/warpmip/shared/processed_outputs/Regional_harmonized_'+graph_type+'_'+season[1]+'_'+var+'_'+str(sim)+'.png' 
+            out_file = '/projects/warpmip/shared/processed_outputs/regional/figures/' + graph_type + \
+                       '/Regional_harmonized_'+graph_type+'_'+season[1]+'_'+var+'_'+str(sim)+'.png' 
             # subset seasonal data to perturbation simulation of interest
             dsg = season[0].sel(sim=sim)
             # Set figure size

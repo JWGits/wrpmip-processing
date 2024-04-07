@@ -24,53 +24,60 @@ def main():
     with open(Path(p_file),"a") as printfile:
         for line in config['config_files']:
             printfile.write(line + '\n')            
-    # check for old deletme folder
-    if Path(config['delete_dir']).exists():
-        xrfx.rmv_dir(config['delete_dir'])
-    # mkdir if it doesnt exist 
+    # mkdir if it doesnt exist and store/append to each model config dictionary
+    model_config_list = []
     for model in config['config_files']:
         mod_con = xrfx.read_config(model)
-        if Path(mod_con['output_dir']+mod_con['model_name']).exists():
+        mod_con.update({'output_dir': config['output_dir']})
+        if Path(mod_con['output_dir'] + 'zarr_output/' + mod_con['model_name']).exists():
             # move existing directory to delete location
-            shutil.move(mod_con['output_dir']+mod_con['model_name'], config['delete_dir']) 
+            shutil.move(mod_con['output_dir'] + 'zarr_output/' + mod_con['model_name'], config['delete_dir']) 
         else:
             # make model folders
-            Path(mod_con['output_dir']+mod_con['model_name']).mkdir(parents=True, exist_ok=True)
-            Path(mod_con['output_dir']+mod_con['model_name']).chmod(0o762)
+            Path(mod_con['output_dir'] + 'zarr_output/' + mod_con['model_name']).mkdir(parents=True, exist_ok=True)
+            Path(mod_con['output_dir'] + 'zarr_output/' + mod_con['model_name']).chmod(0o762)
+            Path(mod_con['output_dir'] + 'netcdf_output/' + mod_con['model_name']).mkdir(parents=True, exist_ok=True)
+            Path(mod_con['output_dir'] + 'netcdf_output/' + mod_con['model_name']).chmod(0o762)
+            Path(mod_con['output_dir'] + 'figures/' + mod_con['model_name']).mkdir(parents=True, exist_ok=True)
+            Path(mod_con['output_dir'] + 'figures/' + mod_con['model_name']).chmod(0o762)
+        model_config_list.append(mod_con)
     # start subproccess to remove delete_dir
     threading.Thread(target = lambda : xrfx.rmv_dir(config['delete_dir'])).start()
     # start dask cluster
     with client:
-        # remove previous folder structure and remake 
-        L0 = [client.submit(xrfx.regional_dir_prep, f) for f in config['config_files']]
+        # make folders structure 
+        L0 = [client.submit(xrfx.regional_dir_prep, f) for f in model_config_list]
         wait(L0)
-        # create list of netcdf files to concat/merge/copy for each mo del/simulation combination
-        L1 = [client.submit(xrfx.regional_simulation_files, f) for f in itertools.product(config['config_files'], ["b1","b2","otc","sf"])]
+        # create list of netcdf files to merge each models regional simulation outputs
+        L1 = [client.submit(xrfx.regional_simulation_files, f) for f in itertools.product(model_config_list, ["b1","b2","otc","sf"])]
         full_list = []
         for model_sim in client.gather(L1):
             full_list.append(model_sim)
-        # process each simulation for all models
+        # process each models regional simulation outputs towards harmonizable database
         L2 = [client.submit(xrfx.process_simulation_files, f, config) for f in full_list] 
         del full_list, L0, L1
         wait(L2)
-        # aggregate regional zarr files of each simulation type for each model
-        L_rsims = [client.submit(xrfx.aggregate_harmonize_regional_sims, f) for f in config['config_files']]
+        # aggregate each models regional simulation outputs to a single file 
+        L_rsims = [client.submit(xrfx.aggregate_regional_sims, f) for f in model_config_list]
         wait(L_rsims)
         del L_rsims
-        # aggregate regional model zarr files to final harmonized database
-        L_rm = [client.submit(xrfx.harmonize_regional_models, f) for f in config['config_files']]
+        # harmonize each models combined files to clm5 dimensions by interpolation/extrapolation
+        L_rm = [client.submit(xrfx.harmonize_regional_models, f) for f in model_config_list]
         wait(L_rm)
         del L_rm
-        L_rm2 = [client.submit(xrfx.aggregate_regional_models, config['config_files'])]
+        # aggregate all harmonized models into single zarr database
+        L_rm2 = [client.submit(xrfx.aggregate_regional_models, model_config_list)]
         wait(L_rm2)
         del L_rm2
-        L_rm3 = [client.submit(xrfx.regional_model_zarrs_to_netcdfs, f) for f in itertools.product(config['config_files'],range(2000,2021))]
+        # output netcdfs by year for each model, and by year/month for the final harmonized database
+        L_rm3 = [client.submit(xrfx.regional_model_zarrs_to_netcdfs, f) for f in itertools.product(model_config_list,range(2000,2021))]
         wait(L_rm3)
         del L_rm3
-        L_rm4 = [client.submit(xrfx.harmonized_model_zarr_to_monthly_netcdfs, f) for f in itertools.product(config['config_files'], range(2000,2021),
+        L_rm4 = [client.submit(xrfx.harmonized_model_zarr_to_monthly_netcdfs, f) for f in itertools.product(model_config_list, range(2000,2021),
             range(0,12))]
         wait(L_rm4)
         del L_rm4
+        # graph regional outputs from harmonized zarr database
         L_rm5 = [client.submit(xrfx.regional_model_graphs, f) for f in [('mean','TotalResp',1)]]
         wait(L_rm5)
         del L_rm5

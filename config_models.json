@@ -1,6 +1,6 @@
 {
-	"output_dir": "/projects/warpmip/shared/processed_outputs/",
-	"delete_dir": "/projects/warpmip/shared/processed_outputs/for_deletion/",
+	"output_dir": "/projects/warpmip/shared/processed_outputs/regional/",
+	"delete_dir": "/projects/warpmip/shared/processed_outputs/regional/for_deletion/",
 	"config_files": [
 		"/scratch/jw2636/wrpmip/python_codes/model_configs/CLM5.json",
 		"/scratch/jw2636/wrpmip/python_codes/model_configs/CLM5-ExIce.json",
