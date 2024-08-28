@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH -J dask-mpi
 #SBATCH -p core
-#SBATCH --nodes=11
+#SBATCH --nodes=1
 #SBATCH -C sl
 #SBATCH --ntasks-per-node=4
 #SBATCH --sockets-per-node=2
@@ -15,9 +15,14 @@
 eval "$(conda shell.bash hook)"
 # load anaconda module and conda env
 #module load openmpi/4.1.4
+module purge
 module load anaconda3
 conda activate /scratch/jw2636/wrpmip/conda_envs/r_env
+module load openmpi/4.1.4
+PMIX_MCA_gds=hash
+#module load anaconda3
+#conda activate /scratch/jw2636/wrpmip/conda_envs/r_env
 
 # call python scripts
-mpirun -np 44 --bind-to core --map-by socket --report-bindings python3 xr_bias.py $1
+mpirun -np 4 --bind-to core --map-by socket --report-bindings python3 xr_bias.py $1
 wait

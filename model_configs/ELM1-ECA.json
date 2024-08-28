@@ -1,0 +1,38 @@
+{
+	"model_name": "ELM1-ECA",
+	"b1_dir": "", 
+	"b1_str": "",
+	"b2_dir": "/scratch/jw2636/processed_outputs/ELM1-ECA/b2/", 
+	"b2_str": "b2",
+	"otc_dir": "/scratch/jw2636/processed_outputs/ELM1-ECA/otc/",
+	"otc_str": "otc",
+	"sf_dir": "/scratch/jw2636/processed_outputs/ELM1-ECA/sf/", 
+	"sf_str": "sf",
+	"merge_type": "time",
+	"has_b1": "False",
+	"has_b2": "True",
+	"has_otc": "True",
+	"has_sf": "True",
+	"subset_vars": [
+		"GPP",
+		"ER",
+		"TSOI",
+		"ALT",
+		"ZWT_PERCH",
+		"TOTSOMC",
+		"TOTSOMN"
+	],
+	"rename_subset": {
+		"ER": "TotalResp",
+		"TSOI": "SoilTemp",
+		"levgrnd": "SoilDepth",
+		"ZWT_PERCH": "WTD",
+		"TOTSOMC": "SoilC", 
+		"TOTSOMN": "SoilN" 
+	},
+	"data_units": {
+		"SoilTemp": {"scale_type": "add", "scale_value": -273.15, "units": "C"}
+	},
+	"coords_units": {},
+	"soil_depths": [0.007100635, 0.027925, 0.06225858, 0.1188651, 0.2121934, 0.3660658, 0.6197585, 1.038027, 1.727635, 2.864607, 4.739157, 7.829766, 12.92532, 21.32647, 35.17762]
+}

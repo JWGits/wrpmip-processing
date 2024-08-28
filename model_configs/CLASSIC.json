@@ -1,0 +1,37 @@
+{
+	"model_name": "CLASSIC",
+	"b1_dir": "/projects/warpmip/shared/model_outputs/CLASSIC/Baseline_1901_2000/", 
+	"b1_str": "_360x40_1901-2000_monthly_",
+	"b2_dir": "/projects/warpmip/shared/model_outputs/CLASSIC/Baseline/", 
+	"b2_str": "_360x40_2000-2021_daily_",
+	"otc_dir": "/projects/warpmip/shared/model_outputs/CLASSIC/OTC/",
+	"otc_str": "_OTC_",
+	"sf_dir": "/projects/warpmip/shared/model_outputs/CLASSIC/Snowfence/", 
+	"sf_str": "_Snowfence_",
+	"merge_type": "variables",
+	"has_b1": "True",
+	"has_b2": "True",
+	"has_otc": "True",
+	"has_sf": "True",
+	"subset_vars": [
+		"GPP",
+		"TotalResp",
+		"SoilTemp",
+		"ALT",
+		"cSoil",
+		"nSoil"
+	],
+	"rename_subset": {
+		"nsoil": "SoilDepth",
+		"cSoil": "SoilC",
+		"nSoil": "SoilN"
+	},
+	"data_units": {
+		"TotalResp": {"scale_type": "multiply", "scale_value": 1000.0, "units": "gC/m^2/s"},
+		"GPP": {"scale_type": "multiply", "scale_value": 1000.0, "units": "gC/m^2/s"},
+		"SoilC": {"scale_type": "multiply", "scale_value": 1000.0, "units": "gC/m^2"},
+		"SoilN": {"scale_type": "multiply", "scale_value": 1000.0, "units": "gN/m^2"}
+	},
+	"coords_units": {},
+	"soil_depths": [0.05,0.15,0.25,0.35,0.45,0.55,0.65,0.75,0.85,0.95,1.1,1.35,1.7,2.15,2.9,4.9,8.9,18.9,41.4,58.9]
+}

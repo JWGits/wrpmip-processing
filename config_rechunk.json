@@ -1,0 +1,32 @@
+{
+	"lpj_output_dir": "/scratch/jw2636/processed_outputs/LPJ-GUESS-ML/",
+	"lpj2_output_dir": "/scratch/jw2636/processed_outputs/LPJ-GUESS/",
+	"elm_output_dir": "/scratch/jw2636/processed_outputs/ELM1-ECA/",
+	"delete_dir": "/scratch/jw2636/for_deletion/",
+	"lpj_config_file": [
+		"/scratch/jw2636/wrpmip/python_codes/model_configs/LPJ-GUESS-ML-rechunk.json"
+	],
+	"lpj2_config_file": [
+		"/scratch/jw2636/wrpmip/python_codes/model_configs/LPJ-GUESS-rechunk.json"
+	],
+	"elm_config_file": [
+		"/scratch/jw2636/wrpmip/python_codes/model_configs/ELM1-ECA-rechunk.json"
+	],
+	"nc_read": {
+		"engine": "netcdf4",
+		"b1_chunks": {
+			"time": 144 
+		},
+		"b2_chunks": {
+			"time": 73
+		}
+	},
+	"nc_write": {
+		"engine": "netcdf4",
+		"zlib": "TRUE",
+		"complevel": 6,
+		"shuffle": "FALSE",
+		"fillvalue": -9999,		
+		"format": "NETCDF4_CLASSIC"
+	}
+}

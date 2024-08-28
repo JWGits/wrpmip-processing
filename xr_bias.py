@@ -64,9 +64,14 @@ def main():
         wait(L8)  
         # plot graphs for each site
         L9 = [client.submit(xrfx.plot_site_graphs, f) for f in itertools.product(config['config_files'], ['dw','w','m'])] 
-        wait(L9)  
+        wait(L9) 
+    # combine climate observations and corrections
+    nc_output_dir = '/projects/warpmip/shared/forcing_data/biascorrected_forcing/'
+    xrfx.combine_climate_and_corrections([config['config_files'], nc_output_dir])
+    # summarize climate corrections
+    #xrfx.correction_summary()
     # create combined netcdf file
-    nc_file_out = '/projects/warpmip/shared/forcing_data/biascorrected_forcing/WrPMIP_14site_clmcrujra_bc_1901-2021.nc'
+    nc_file_out = '/projects/warpmip/shared/forcing_data/biascorrected_forcing/2024-08-03_crujra_bc_1901-2021.nc'
     xrfx.combine_corrected_climate([config['config_files'], nc_file_out])
     # create clm site subset forcing files
     config_clmsites = '/scratch/jw2636/wrpmip/python_codes/config_clmclimate2.json'
@@ -74,7 +79,7 @@ def main():
     surf_file = '/projects/warpmip/shared/forcing_data/CRUJRAv2.3/biascorrected_14sites/surfdata_WrPMIP_14sites_CMIP6_simyr2000_c240215.nc'
     xrfx.replace_clm_14site_climate([config_clmsites, bc_climate_file, surf_file])
     # create pdf report        
-    xrfx.climate_pdf_report(config['config_files']) 
+    #xrfx.climate_pdf_report(config['config_files']) 
 
 if __name__ == '__main__':
     # initialize dask cluster on resources requested by sbatch

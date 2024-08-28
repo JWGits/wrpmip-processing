@@ -14,12 +14,14 @@
 	"has_otc": "True",
 	"has_sf": "True",
 	"subset_vars": [
+		"gpp",
 		"TotalResp",
 		"soil_temperature",
 		"thaw_depth",
 		"water_table"
 	],
 	"rename_subset": {
+		"gpp": "GPP",
 		"soil_temperature": "SoilTemp",
 		"belowsurface": "SoilDepth",
 		"thaw_depth": "ALT",
@@ -27,25 +29,12 @@
 	},
 	"data_units": {
 		"SoilTemp": {"scale_type": "add", "scale_value": -273.15, "units": "C"},
-		"TotalResp": {"scale_type": "multiply", "scale_value": 1000.0, "units": "gC/m^2/s"}
+		"TotalResp": {"scale_type": "multiply", "scale_value": 1000.0, "units": "gC/m^2/s"},
+		"GPP": {"scale_type": "multiply", "scale_value": 1000.0, "units": "gC/m^2/s"},
+		"WTD": {"scale_type": "multiply", "scale_value": -1, "units": "m"}
 	},
 	"coords_units": {
 		"SoilDepth": {"scale_type": "multiply", "scale_value": 0.01, "units": "m"}
 	},
-	"soil_depths": [0.03, 0.19, 0.78, 2.68, 6.98],
-	"nc_read": {
-		"engine": "netcdf4",
-		"b1_chunks": {},
-		"b2_chunks": {
-			"time": 73 
-		}
-	},
-	"nc_write": {
-		"engine": "netcdf4",
-		"zlib": "TRUE",
-		"complevel": 0,
-		"shuffle": "FALSE",
-		"fillvalue": -9999,		
-		"format": "NETCDF4_CLASSIC"
-	}
+	"soil_depths": [0.03, 0.19, 0.78, 2.68, 6.98]
 }

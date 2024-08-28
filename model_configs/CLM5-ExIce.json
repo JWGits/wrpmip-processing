@@ -14,36 +14,22 @@
 	"has_otc": "True",
 	"has_sf": "True",
 	"subset_vars": [
+		"GPP",
 		"ER",
 		"TSOI",
+		"ALTMAX",
 		"ZWT_PERCH"
 	],
 	"rename_subset": {
 		"ER": "TotalResp",
 		"TSOI": "SoilTemp",
 		"levgrnd": "SoilDepth",
+		"ALTMAX": "ALT",
 		"ZWT_PERCH": "WTD"
 	},
 	"data_units": {
 		"SoilTemp": {"scale_type": "add", "scale_value": -273.15, "units": "C"}
 	},
 	"coords_units": {},
-	"soil_depths": [0.01, 0.04, 0.09, 0.16, 0.26, 0.4, 0.58, 0.8, 1.06, 1.36, 1.7, 2.08, 2.5, 2.99, 3.58, 4.27, 5.06, 5.95, 6.94, 8.03, 9.795, 13.32777, 19.48313, 28.87072, 41.99844],
-	"nc_read": {
-		"engine": "netcdf4",
-		"b1_chunks": {
-			"time": 120
-		},
-		"b2_chunks": {
-			"time": 73
-		}
-	},
-	"nc_write": {
-		"engine": "netcdf4",
-		"zlib": "TRUE",
-		"complevel": 0,
-		"shuffle": "FALSE",
-		"fillvalue": -9999,		
-		"format": "NETCDF4_CLASSIC"
-	}
+	"soil_depths": [0.01, 0.04, 0.09, 0.16, 0.26, 0.4, 0.58, 0.8, 1.06, 1.36, 1.7, 2.08, 2.5, 2.99, 3.58, 4.27, 5.06, 5.95, 6.94, 8.03, 9.795, 13.32777, 19.48313, 28.87072, 41.99844]
 }

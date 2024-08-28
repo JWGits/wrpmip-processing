@@ -7,12 +7,17 @@ import traceback
 import gzip
 import itertools
 import math
+import random
+import string
 from datetime import datetime, date
 from pathlib import Path
 import netCDF4 as nc
 import xarray as xr
+import xesmf as xe
+import rioxarray as rxr
 import cftime as cft
 import numpy as np
+from numpy.polynomial.polynomial import polyfit
 import pandas as pd
 from pandas import option_context
 from reportlab.lib import utils
@@ -24,8 +29,11 @@ from matplotlib import pyplot as plt
 import matplotlib.cm as cm
 import matplotlib as matplotlib
 import matplotlib.path as mpath
+from cycler import cycler
 import cartopy.crs as ccrs
 import cartopy
+import seaborn as sns
+import nc_time_axis
 import docx
 import textwrap
 import dask.config
@@ -33,6 +41,7 @@ from numcodecs import Blosc, Zlib, Zstd
 from functools import partial
 from cycler import cycler
 import zipfile
+import scipy
 from scipy.optimize import curve_fit
 from plotnine import (
     ggplot,
@@ -94,6 +103,56 @@ def rmv_dir(string):
         print(error)
         pass
 
+# create rand string generator
+def rand_str_gen(count=1000):
+    # create empty list for generated strings
+    generated_strs = set()
+    while True:
+        if len(generated_strs) == count:
+            return
+        # create random 16 digit string
+        candidate_str = ''.join(random.choices(string.ascii_letters + string.digits, k=16))
+        # check if in generated
+        if candidate_str not in generated_strs:
+            generated_strs.add(candidate_str)
+            yield candidate_str
+
+# mv old files within /projects folder
+def subdir_list(cur_dir):
+    try:
+        dir_list = [x[0] for x in os.walk(cur_dir, topdown=False)]
+    except Exception as error:
+        print(error)
+    return dir_list
+
+# mv old files within /projects folder
+def mv_subdir_list(cur_dir, new_dir):
+    try:
+        # call string generator
+        dir_list = subdir_list(cur_dir)
+        str_gen = rand_str_gen(len(dir_list)*2)
+        # loop through new project directory for list of sub dir
+        move_list = []
+        for i in dir_list:
+            # generate unique string and add to scratch dir
+            new_out = new_dir + next(str_gen)
+            # add to move list
+            move_list.append([i, new_out])
+    except Exception as error:
+        print(error)
+    return move_list
+
+# mv old files within /projects folder
+def mv_dir(cur_dir, new_dir):
+    try:
+        # make project directory folder
+        Path(new_dir).mkdir(parents=True, exist_ok=True)
+        # move regional folder to new project location
+        shutil.move(cur_dir, new_dir)
+    except Exception as error:
+        print(error)
+        pass
+
 # read config file from sys.arg
 def read_config(sys_argv_file):
     with open(sys_argv_file) as f:
@@ -117,6 +176,52 @@ def specific_humidity(rh, tair, pres):
     es = es0**x
     sh = 0.622*(rh/100.0)*es/pres_hPa
     return sh
+
+# make graph circular
+def add_circle_boundary(ax):
+    # Compute a circle in axes coordinates, which we can use as a boundary
+    # for the map. We can pan/zoom as much as we like - the boundary will be
+    # permanently circular.
+    theta = np.linspace(0, 2*np.pi, 100)
+    center, radius = [0.5, 0.5], 0.5
+    verts = np.vstack([np.sin(theta), np.cos(theta)]).T
+    circle = mpath.Path(verts * radius + center)
+    ax.set_boundary(circle, transform=ax.transAxes)
+
+# functions to select seasons
+def is_summer(month):
+    return (month >= 5) & (month <= 9)
+def is_maes_summer(month):
+    return (month >= 6) & (month <= 8)
+def is_winter(month):
+    return (month > 10) | (month < 4 )
+
+# functions to select time since warming onset
+def is_initial(year):
+    return (year <= 5)
+def is_middle(year):
+    return (year > 5) & (year <= 10)
+def is_longterm(year):
+    return (year > 10) & (year <= 15)
+
+# calculate RSME across models for all grids
+def root_mean_squared_error(dataset, var, agg_over):
+    ds_means = dataset[var].mean(dim=agg_over)
+    rsme = np.sqrt(((dataset[var] - ds_means)**2).mean(dim=agg_over))
+    return rsme
+
+# shift array
+def shift5(arr, num, fill_value=np.nan):
+    result = np.empty_like(arr)
+    if num > 0:
+        result[:num] = fill_value
+        result[num:] = arr[:-num]
+    elif num < 0:
+        result[num:] = fill_value
+        result[:num] = arr[-num:]
+    else:
+        result[:] = arr
+    return result
 
 ###########################################################################################################################
 # subset/resamp/concat output files
@@ -1718,6 +1823,249 @@ def bias_correction(f_iter):
                     format=config['nc_write']['format'],\
                     engine=config['nc_write']['engine'])   
 
+# summary stats on crujra 
+def combine_climate_and_corrections(input_list):
+    # read in config file with list of site folder
+    config_files = input_list[0]
+    dir_out = input_list[1] 
+    kwargs = {'mask_and_scale': True}
+    # collect file names from each for for Mbias crujra files
+    file_list = []
+    for site in config_files:
+        site_config = read_config(site)
+        crujra_file = Path(site_config['site_dir'] + '/CRUJRA_' + site_config['site_name'] + '_allyears.nc')
+        mbias_file = Path(site_config['site_dir'] + '/MBias_' + site_config['site_name'] + '_dw_allyears.nc')
+        data_file = Path(site_config['site_dir'] + '/Obs_' + site_config['site_name'] + '_dat.nc')
+        file_list.append([site_config['site_name'], site_config, crujra_file, mbias_file, data_file])  
+    # loop through files appending the site dimension
+    ds_list_cru = []
+    ds_list_mbias = []
+    ds_list_obs = []
+    iterator = 1    
+    for file_name in file_list:
+        # extract site info list
+        site_name = file_name[0]
+        site_config = file_name[1]
+        crujra_ncfile = file_name[2]
+        mbias_ncfile = file_name[3]
+        obs_ncfile = file_name[4]
+        # open site file
+        with xr.open_dataset(crujra_ncfile, engine=site_config['nc_read']['engine'], decode_cf=True, use_cftime=True, **kwargs) as ds_tmp:
+            ds_cru = ds_tmp.load()
+        with xr.open_dataset(mbias_ncfile, engine=site_config['nc_read']['engine'], decode_cf=True, use_cftime=True, **kwargs) as ds_tmp:
+            ds_mbias = ds_tmp.load()
+        try:
+            with xr.open_dataset(obs_ncfile, engine=site_config['nc_read']['engine'], decode_cf=True, use_cftime=True, **kwargs) as ds_tmp:
+                ds_obs = ds_tmp.load()
+        except:
+            pass
+        # remove RAIN and SNOW
+        ds_cru = ds_cru.drop_vars(['RAIN','SNOW'])
+        ds_cru = ds_cru.assign_coords({'site': iterator})
+        ds_cru = ds_cru.assign_coords({'data_type': 'cru'})
+        ds_cru = ds_cru.assign({'site_name': site_name})
+        ds_cru = ds_cru.assign({'lon': site_config['lon']})
+        ds_cru = ds_cru.assign({'lat': site_config['lat']})
+        ds_cru = ds_cru.expand_dims('site')
+        ds_cru = ds_cru.expand_dims('data_type')
+        ds_mbias = ds_mbias.drop_vars(['RAIN','SNOW'])
+        if site_name in ['CAN-WanderingRiver','SVA-Endalen']:
+            ds_obs = ds_mbias.copy(deep=True)
+            for var in ['FSDS','FLDS','PBOT','QBOT','TBOT','WIND','PRECIP']:
+                ds_obs[var].loc[:] = np.nan
+        ds_mbias = ds_mbias.assign_coords({'site': iterator})
+        ds_mbias = ds_mbias.assign_coords({'data_type': 'mbc'})
+        ds_mbias = ds_mbias.assign({'site_name': site_name})
+        ds_mbias = ds_mbias.assign({'lon': site_config['lon']})
+        ds_mbias = ds_mbias.assign({'lat': site_config['lat']})
+        ds_mbias = ds_mbias.expand_dims('site')
+        ds_mbias = ds_mbias.expand_dims('data_type')
+        ds_obs = ds_obs.assign_coords({'site': iterator})
+        ds_obs = ds_obs.assign_coords({'data_type': 'obs'})
+        ds_obs = ds_obs.assign({'site_name': site_name})
+        ds_obs = ds_obs.assign({'lon': site_config['lon']})
+        ds_obs = ds_obs.assign({'lat': site_config['lat']})
+        ds_obs = ds_obs.expand_dims('site')
+        ds_obs = ds_obs.expand_dims('data_type')
+        # append dataset to list for later merging
+        ds_list_cru.append(ds_cru)
+        ds_list_mbias.append(ds_mbias)
+        ds_list_obs.append(ds_obs)
+        iterator += 1
+    # merge dataset
+    ds_sites_cru = xr.merge(ds_list_cru)
+    ds_sites_mbias = xr.merge(ds_list_mbias)
+    ds_sites_obs = xr.merge(ds_list_obs)
+    # reindex time by
+    start_time = '1901-01-01 00:00:00'
+    end_time = '2021-12-31 23:00:00'
+    ds_sites_cru = ds_sites_cru.reindex({'time': xr.cftime_range(start=start_time, end=end_time, freq='h', calendar='noleap')})
+    ds_sites_mbias = ds_sites_mbias.reindex({'time': xr.cftime_range(start=start_time, end=end_time, freq='h', calendar='noleap')})
+    ds_sites_obs = ds_sites_obs.reindex({'time': xr.cftime_range(start=start_time, end=end_time, freq='h', calendar='noleap')})
+    # final merged file
+    ds_final = xr.merge([ds_sites_cru,ds_sites_mbias,ds_sites_obs])
+    # output files
+    config = read_config(config_files[0])
+    cru_out = dir_out + 'CRUJRA_sites.nc' 
+    mbias_out = dir_out + 'MBias_sites.nc' 
+    obs_out = dir_out + 'Obs_sites.nc' 
+    final_out = dir_out + 'Combined_climate_sites.nc'
+    ds_sites_cru.to_netcdf(cru_out, mode="w", \
+                format=config['nc_write']['format'], \
+                engine=config['nc_write']['engine'])
+    ds_sites_mbias.to_netcdf(mbias_out, mode="w", \
+                format=config['nc_write']['format'], \
+                engine=config['nc_write']['engine'])
+    ds_sites_obs.to_netcdf(obs_out, mode="w", \
+                format=config['nc_write']['format'], \
+                engine=config['nc_write']['engine'])
+    ds_final.to_netcdf(final_out, mode="w", \
+                format=config['nc_write']['format'], \
+                engine=config['nc_write']['engine'])
+
+# summarize final corrections
+def correction_summary():
+    # define final file location
+    out_dir = '/projects/warpmip/shared/forcing_data/biascorrected_forcing/'
+    file_name = '/projects/warpmip/shared/forcing_data/biascorrected_forcing/Combined_climate_sites.nc'
+    # read in file
+    kwargs = {'mask_and_scale': True}
+    with xr.open_dataset(file_name, engine='netcdf4', decode_cf=True, use_cftime=True, **kwargs) as ds_tmp:
+        ds = ds_tmp.load()
+    ds['PBOT'] = ds['PBOT'] / 1000
+    with open(Path(out_dir + 'debug_summary.txt'), 'w') as f:
+        print('Combined dataset:', file=f)
+        print(ds, file=f)
+        print('time coords', file=f)
+        print(ds['time'].values, file=f)
+    # # plot data
+    # for var in ['FSDS','FLDS','PBOT','QBOT','TBOT','WIND','PRECIP']:
+    #     fig = plt.figure(figsize=(10,10))
+    #     kwargs = {'alpha': 0.8}
+    #     ds[var].sel(time=slice('1990','2022')).plot(col='site', col_wrap=4, hue='data_type', **kwargs)
+    #     plt.savefig(Path(out_dir + var + '_compare.png'), dpi=300)
+    #     plt.close(fig)
+    # define function to take RSME between to data types
+    def rmse_between_data_types(ds, y_pred, y, var, dim_reduce):
+        differences = ds[var].sel(data_type=y_pred) - ds[var].sel(data_type=y)
+        with open(Path(out_dir + 'debug_summary.txt'), 'a') as f:
+            print('differences for ' + y_pred + ' and ' + var + ':', file=f)
+            print(differences, file=f)
+        diff_sqrd = differences ** 2
+        with open(Path(out_dir + 'debug_summary.txt'), 'a') as f:
+            print('differences squared for ' + y_pred + ' and ' + var + ':', file=f)
+            print(diff_sqrd, file=f)
+        mean_diff_sqrd = diff_sqrd.mean(dim=dim_reduce, skipna=True)
+        with open(Path(out_dir + 'debug_summary.txt'), 'a') as f:
+            print('mean differences squared for ' + y_pred + ' and ' + var + ':', file=f)
+            print(mean_diff_sqrd, file=f)
+        rmse_value = np.sqrt(mean_diff_sqrd)
+        with open(Path(out_dir + 'debug_summary.txt'), 'a') as f:
+            print('rmse values for ' + y_pred + ' and ' + var + ':', file=f)
+            print(rmse_value, file=f)
+        return rmse_value
+    # calculate RSME of crujra vs obs / mbias vs obs
+    site_names = ds['site_name'].sel(data_type='obs').values
+    climate_name = 'Climate'
+    data_name = 'Driver'
+    tbot_cru_rmse = rmse_between_data_types(ds,'cru','obs','TBOT','time').to_dataframe().set_index(site_names).reset_index().rename(columns={'TBOT': 'RMSE', 'index': 'Site'})
+    tbot_cru_rmse[climate_name] = 'Crujra_v2.3'
+    tbot_cru_rmse[data_name] = 'TBOT (K)'
+    tbot_mbias_rmse = rmse_between_data_types(ds,'mbc','obs','TBOT','time').to_dataframe().set_index(site_names).reset_index().rename(columns={'TBOT': 'RMSE', 'index': 'Site'})
+    tbot_mbias_rmse[climate_name] = 'Mbc'
+    tbot_mbias_rmse[data_name] = 'TBOT (K)'
+    pbot_cru_rmse = rmse_between_data_types(ds,'cru','obs','PBOT','time').to_dataframe().set_index(site_names).reset_index().rename(columns={'PBOT': 'RMSE', 'index': 'Site'})
+    pbot_cru_rmse[climate_name] = 'Crujra_v2.3'
+    pbot_cru_rmse[data_name] = 'PBOT (kPa)'
+    pbot_mbias_rmse = rmse_between_data_types(ds,'mbc','obs','PBOT','time').to_dataframe().set_index(site_names).reset_index().rename(columns={'PBOT': 'RMSE', 'index': 'Site'})
+    pbot_mbias_rmse[climate_name] = 'Mbc'
+    pbot_mbias_rmse[data_name] = 'PBOT (kPa)'
+    qbot_cru_rmse = rmse_between_data_types(ds,'cru','obs','QBOT','time').to_dataframe().set_index(site_names).reset_index().rename(columns={'QBOT': 'RMSE', 'index': 'Site'})
+    qbot_cru_rmse[climate_name] = 'Crujra_v2.3'
+    qbot_cru_rmse[data_name] = 'QBOT (kg/kg)'
+    qbot_mbias_rmse = rmse_between_data_types(ds,'mbc','obs','QBOT','time').to_dataframe().set_index(site_names).reset_index().rename(columns={'QBOT': 'RMSE', 'index': 'Site'})
+    qbot_mbias_rmse[climate_name] = 'Mbc'
+    qbot_mbias_rmse[data_name] = 'QBOT (kg/kg)'
+    fsds_cru_rmse = rmse_between_data_types(ds,'cru','obs','FSDS','time').to_dataframe().set_index(site_names).reset_index().rename(columns={'FSDS': 'RMSE', 'index': 'Site'})
+    fsds_cru_rmse[climate_name] = 'Crujra_v2.3'
+    fsds_cru_rmse[data_name] = 'FSDS (W/m2)'
+    fsds_mbias_rmse = rmse_between_data_types(ds,'mbc','obs','FSDS','time').to_dataframe().set_index(site_names).reset_index().rename(columns={'FSDS': 'RMSE', 'index': 'Site'})
+    fsds_mbias_rmse[climate_name] = 'Mbc'
+    fsds_mbias_rmse[data_name] = 'FSDS (W/m2)'
+    flds_cru_rmse = rmse_between_data_types(ds,'cru','obs','FLDS','time').to_dataframe().set_index(site_names).reset_index().rename(columns={'FLDS': 'RMSE', 'index': 'Site'})
+    flds_cru_rmse[climate_name] = 'Crujra_v2.3'
+    flds_cru_rmse[data_name] = 'FLDS (W/m2)'
+    flds_mbias_rmse = rmse_between_data_types(ds,'mbc','obs','FLDS','time').to_dataframe().set_index(site_names).reset_index().rename(columns={'FLDS': 'RMSE', 'index': 'Site'})
+    flds_mbias_rmse[climate_name] = 'Mbc'
+    flds_mbias_rmse[data_name] = 'FLDS (W/m2)'
+    wind_cru_rmse = rmse_between_data_types(ds,'cru','obs','WIND','time').to_dataframe().set_index(site_names).reset_index().rename(columns={'WIND': 'RMSE', 'index': 'Site'})
+    wind_cru_rmse[climate_name] = 'Crujra_v2.3'
+    wind_cru_rmse[data_name] = 'WIND (m/s)'
+    wind_mbias_rmse = rmse_between_data_types(ds,'mbc','obs','WIND','time').to_dataframe().set_index(site_names).reset_index().rename(columns={'WIND': 'RMSE', 'index': 'Site'})
+    wind_mbias_rmse[climate_name] = 'Mbc'
+    wind_mbias_rmse[data_name] = 'WIND (m/s)'
+    prec_cru_rmse = rmse_between_data_types(ds,'cru','obs','PRECIP','time').to_dataframe().set_index(site_names).reset_index().rename(columns={'PRECIP': 'RMSE', 'index': 'Site'})
+    prec_cru_rmse[climate_name] = 'Crujra_v2.3'
+    prec_cru_rmse[data_name] = 'PRECIP (mm/s)'
+    prec_mbias_rmse = rmse_between_data_types(ds,'mbc','obs','PRECIP','time').to_dataframe().set_index(site_names).reset_index().rename(columns={'PRECIP': 'RMSE', 'index': 'Site'})
+    prec_mbias_rmse[climate_name] = 'Mbc'
+    prec_mbias_rmse[data_name] = 'PRECIP (mm/s)'
+    # check data
+    with open(Path(out_dir + 'debug_summary.txt'), 'a') as f:
+        print('CRUJRA vs obs:', file=f)
+        print(tbot_cru_rmse, file=f)
+        print(tbot_cru_rmse.values, file=f)
+        print('Mbias vs obs:', file=f)
+        print(tbot_mbias_rmse, file=f)
+        print(tbot_mbias_rmse.values, file=f)
+    # combine data into long format
+    df_tbot = tbot_cru_rmse.merge(tbot_mbias_rmse, on=['Site','Climate','Driver','RMSE'], how='outer')
+    df_pbot = pbot_cru_rmse.merge(pbot_mbias_rmse, on=['Site','Climate','Driver','RMSE'], how='outer')
+    df_qbot = qbot_cru_rmse.merge(qbot_mbias_rmse, on=['Site','Climate','Driver','RMSE'], how='outer')
+    df_fsds = fsds_cru_rmse.merge(fsds_mbias_rmse, on=['Site','Climate','Driver','RMSE'], how='outer')
+    df_flds = flds_cru_rmse.merge(flds_mbias_rmse, on=['Site','Climate','Driver','RMSE'], how='outer')
+    df_wind = wind_cru_rmse.merge(wind_mbias_rmse, on=['Site','Climate','Driver','RMSE'], how='outer')
+    df_prec = prec_cru_rmse.merge(prec_mbias_rmse, on=['Site','Climate','Driver','RMSE'], how='outer')
+    with open(Path(out_dir + 'debug_summary.txt'), 'a') as f:
+        print('Merged tbot dataframe:', file=f)
+        print(df_tbot, file=f)
+    # concat the responses
+    df = pd.concat([df_tbot,df_pbot,df_qbot,df_fsds,df_flds,df_wind,df_prec], ignore_index=True)
+    df = df[['Climate','Driver','Site','RMSE']]
+    df = df.sort_values(['Site','Climate','Driver'])
+    with open(Path(out_dir + 'debug_summary.txt'), 'a') as f:
+        print('Merged dataframe of all climate drivers:', file=f)
+        print(df, file=f)
+    # make faceted seabonr plot
+    fig = plt.figure()
+    sns.set(style='white', font_scale=1.2)
+    g = sns.catplot(kind='bar', data=df, x='Site', y='RMSE', hue='Climate', col='Driver', color=['orange','dodgerblue'], col_wrap=4, \
+                    palette=sns.color_palette(['orange','dodgerblue']), sharey=False, height=6, aspect=0.8, edgecolor='none')
+    sns.move_legend(g, "upper left", bbox_to_anchor=(.80, .37), frameon=False, title='Climate Source', fontsize=20, title_fontsize='xx-large') 
+    g.tick_params(axis='x', which='both', rotation=90, labelsize=12) 
+    g.fig.set_figheight(15)
+    g.fig.set_figwidth(20)
+    axes = g.axes.flatten()
+    axes[0].set_ylabel('RMSE (W/m2)')
+    axes[0].set_title('FLDS')
+    axes[1].set_ylabel('RMSE (W/m2)')
+    axes[1].set_title('FSDS')
+    axes[2].set_ylabel('RMSE (kPa)')
+    axes[2].set_title('PBOT')
+    axes[3].set_ylabel('RMSE (mm/s)')
+    axes[3].set_title('PRECIP')
+    axes[4].set_ylabel('RMSE (kg/kg)')
+    axes[4].set_title('QBOT')
+    axes[5].set_ylabel('RMSE (k)')
+    axes[5].set_title('TBOT')
+    axes[6].set_ylabel('RMSE (m/s)')
+    axes[6].set_title('WIND')
+    plt.tight_layout()
+    #matplotlib.rcParams['axes.grid'] = True
+    #matplotlib.rcParams['savefig.transparent'] = True 
+    plt.savefig(Path(out_dir + 'RMSE_barplot.png'), dpi=300, transparent=True)
+    plt.close(fig)
+ 
 # function to take correct mbc files and combine them together
 def combine_corrected_climate(input_list):
     # read in config file with list of site folder
@@ -2952,9 +3300,11 @@ def regional_simulation_files(input_list):
     # read all CRUJRA input file names from reanalysis directory
     dir_name = sim_type + '_dir'
     sim_str = sim_type + '_str'
-    if config['model_name'] != 'ecosys':
+    if config['model_name'] not in ['ecosys','ELM1-ECA']:
         sim_files = sorted(glob.glob("{}*{}*.nc".format(config[dir_name], config[sim_str])))
-    else:
+    elif config['model_name'] in ['ELM1-ECA']:
+        sim_files = sorted(glob.glob("{}*{}*.zarr".format(config[dir_name], config[sim_str])))
+    elif config['model_name'] in ['ecosys']:
         # deal with non-standard file and variable chunking in ecosys
         # this will eventually need to be updated for other files: water, SOC, etc.
         sim_files1 = sorted(glob.glob("{}*{}*.nc".format(config[dir_name], 'daily_C_flux')))
@@ -2968,61 +3318,386 @@ def regional_simulation_files(input_list):
     info_list = [config, sim_type, sim_files, merged_file]
     return info_list 
 
+# rechunk LPJ-GUESS-ML
+def list_lpjguessml(input_list):
+    # read config file
+    config = input_list[0]
+    # read the simulation type
+    sim_type = input_list[1]
+    # read all CRUJRA input file names from reanalysis directory
+    dir_name = sim_type + '_dir'
+    sim_str = sim_type + '_str'
+    sim_dir = Path(config[dir_name]).stem
+    # make output dir
+    Path(config['output_dir'] + sim_dir).mkdir(parents=True, exist_ok=True)
+    Path(config['output_dir'] + sim_dir).chmod(0o762)
+    with open(Path(config['output_dir'] + 'debug_' + config['model_name'] + '_' + sim_type + '.txt'), 'w') as pf:
+        print('sim_dir: ', file=pf)
+        print(sim_dir, file=pf)
+    sim_files = sorted(glob.glob("{}*{}*.nc".format(config[dir_name], config[sim_str])))
+    #sim_files = [x for x in sim_files if 'Soil' in x]
+    with open(Path(config['output_dir'] + 'debug_' + config['model_name'] + '_' + sim_type + '.txt'), 'a') as pf:
+        print('sim files: ', file=pf)
+        print(sim_files, file=pf)
+        print('output file list: ', file=pf)
+    file_list = []
+    for f in sim_files:
+        file_name = Path(f).name
+        output_file = config['output_dir'] + sim_dir + '/' + file_name
+        file_list.append([f, output_file])
+    with open(Path(config['output_dir'] + 'debug_' + config['model_name'] + '_' + sim_type + '.txt'), 'a') as pf:
+        print(file_list, file=pf)
+    return file_list
+
+def rechunk_elmeca(input_list):
+    # read config file
+    config = input_list[0]
+    # read the simulation type
+    sim_type = input_list[1]
+    # read all CRUJRA input file names from reanalysis directory
+    dir_name = sim_type + '_dir'
+    sim_str = sim_type + '_str'
+    # make output dir
+    Path(config['output_dir'] + sim_type).mkdir(parents=True, exist_ok=True)
+    Path(config['output_dir'] + sim_type).chmod(0o762)
+    sim_files = sorted(glob.glob("{}*{}*.nc".format(config[dir_name], config[sim_str])))
+    #sim_files = [x for x in sim_files if 'Soil' in x]
+    with open(Path(config['output_dir'] + 'debug_elmeca.txt'), 'w') as pf:
+        print('LPJ-GUESS-ML rechunking...', file=pf)
+    with dask.config.set(**{'array.slicing.split_large_chunks': False}):
+        # function to chop up file input list
+        def chunk_gen(lst, n):
+            for i in range(0, len(lst), n):
+                yield lst[i:i + n]
+        if sim_type == 'b1':
+            chunk_read = config['nc_read']['b1_chunks']
+            zarr_chunk_out = 144
+        else:
+            chunk_read = config['nc_read']['b2_chunks']
+            zarr_chunk_out = 73
+        # assign engine used to open netcdf files from config
+        engine = config['nc_read']['engine']
+        # set kwargs to mask_and_scale=True and decode_times=False for individual files passed to open_mfdataset
+        kwargs = {"mask_and_scale": True, "decode_times": False}
+        # create functools.partial function to pass subset variable through to preprocess
+        partial_time = partial(preprocess_time, config=config) 
+        # loop through file chunks and output to zarr to fix issues
+        year_iterator = 1
+        # loop through and open chunked file list, 0 to 6204 is from 2000-01-01 to 2016-12-31 noleap
+        # starting from 2017-01-01 time index was restarted for unknown reason in files
+        for file_chunk in chunk_gen(sim_files, 6205):
+            with xr.open_mfdataset(file_chunk, parallel=True, engine=engine, chunks=chunk_read, preprocess=partial_time, **kwargs) as ds_tmp:
+                with open(Path(config['output_dir'] + 'debug_elmeca.txt'), 'a') as pf:
+                    print(ds_tmp, file=pf)
+                # create file name for output
+                file_out = Path(config['output_dir']+ sim_type +'/elm_eca_' + sim_type + '_' + str(year_iterator).zfill(2)+'.zarr')
+                # set zarr compression and encoding
+                compress = Zstd(level=6)
+                # clear all chunk and fill value encoding/attrs
+                for var in ds_tmp:
+                    try:
+                        del ds_tmp[var].encoding['chunks']
+                    except:
+                        pass
+                    try:
+                        del ds_tmp[var].encoding['_FillValue']
+                    except:
+                        pass
+                    try:
+                        del ds_tmp[var].attrs['_FillValue']
+                    except:
+                        pass
+                dim_chunks = {
+                    'time': zarr_chunk_out,
+                    'levgrnd': -1,
+                    'lat': -1,
+                    'lon': -1}
+                ds_tmp = ds_tmp.chunk(dim_chunks)
+                # if after 2017 add 6205 to time value to fix
+                if year_iterator > 1:
+                    ds_tmp = ds_tmp.assign_coords({'time': ds_tmp.time + 6205}) 
+                # encode and output to file 
+                encode = {var: {'_FillValue': np.nan, 'compressor': compress} for var in ds_tmp.data_vars}
+                ds_tmp.to_zarr(file_out, encoding=encode, mode="w")
+            # iterate to next year for file names
+            year_iterator += 1
+
+def rechunk_lpjguessml(input_list, config):
+    input_file = input_list[0]
+    output_file = input_list[1]
+    with open(Path(config['output_dir'] + 'debug_lpjguess.txt'), 'w') as pf:
+        print('LPJ-GUESS-ML rechunking...', file=pf)
+    with dask.config.set(**{'array.slicing.split_large_chunks': False}):
+        ds = xr.open_dataset(input_file, engine=config['nc_read']['engine'], mask_and_scale=True, decode_times=False)
+        ds = ds.rename({'latitude': 'lat', 'longitude': 'lon'})
+        if 'month' in input_file:
+            if 'nsoil' in ds.dims.keys():
+                ds = ds.rename({'nsoil': 'SoilDepth'})
+                chunk_dict = {'time': 144, 'SoilDepth': 15, 'lat': 120, 'lon': 720}
+                ds = ds.chunk(chunk_dict)
+            else:
+                chunk_dict = {'time': 144, 'lat': 120, 'lon': 720}
+                ds = ds.chunk(chunk_dict)
+        else:
+            if 'nsoil' in ds.dims.keys():
+                ds = ds.rename({'nsoil': 'SoilDepth'})
+                chunk_dict = {'time': 73, 'SoilDepth': 15, 'lat': 120, 'lon': 720}
+                ds = ds.chunk(chunk_dict)
+            else:
+                chunk_dict = {'time': 73, 'lat': 120, 'lon': 720}
+                ds = ds.chunk(chunk_dict)
+        ds = ds.transpose('time', 'SoilDepth', 'lat', 'lon', missing_dims='ignore')
+        with open(Path(config['output_dir'] + 'debug_lpjguess.txt'), 'a') as pf:
+            print(ds, file=pf)
+            print(ds.encoding, file=pf)
+        # clear encoding chunks
+        with open(Path(config['output_dir'] + 'debug_lpjguess.txt'), 'a') as pf:
+            print(ds.encoding, file=pf)
+        # output netcdf
+        comp = dict(zlib=config['nc_write']['zlib'], shuffle=config['nc_write']['shuffle'],\
+                complevel=config['nc_write']['complevel'], _FillValue=np.nan, chunksizes=list(chunk_dict.values()))
+        encoding = {var: comp for var in ds.data_vars}
+        ds.to_netcdf(output_file, mode="w", encoding=encoding, \
+                format=config['nc_write']['format'], \
+                engine=config['nc_write']['engine'])
+        # try to close file connection
+        try:
+            ds.close()
+        except:
+            pass
+        # try to delete data
+        try:
+            del ds
+        except:
+            pass
+
+def rechunk_lpjguess(input_list, config):
+    input_file = input_list[0]
+    output_file = input_list[1]
+    with open(Path(config['output_dir'] + 'debug_lpjguess.txt'), 'w') as pf:
+        print('LPJ-GUESS-ML rechunking...', file=pf)
+    with dask.config.set(**{'array.slicing.split_large_chunks': False}):
+        ds = xr.open_dataset(input_file, engine=config['nc_read']['engine'], mask_and_scale=True, decode_times=False)
+        #ds = ds.rename({'latitude': 'lat', 'longitude': 'lon'})
+        if 'month' in input_file:
+            if 'nsoil' in ds.dims.keys():
+                ds = ds.rename({'nsoil': 'SoilDepth'})
+                chunk_dict = {'time': 144, 'SoilDepth': 15, 'lat': 108, 'lon': 675}
+                ds = ds.chunk(chunk_dict)
+            elif 'nsnow' in ds.dims.keys():
+                chunk_dict = {'time': 144, 'lat': 108, 'lon': 675, 'nsnow': 5}
+                ds = ds.chunk(chunk_dict)
+            elif 'nsompool' in ds.dims.keys():
+                chunk_dict = {'time': 144, 'lat': 108, 'lon': 675, 'nsompool': 11}
+                ds = ds.chunk(chunk_dict)
+            else:
+                chunk_dict = {'time': 144, 'lat': 108, 'lon': 675}
+                ds = ds.chunk(chunk_dict)
+        elif 'year' in input_file:
+            if 'nsoil' in ds.dims.keys():
+                ds = ds.rename({'nsoil': 'SoilDepth'})
+                chunk_dict = {'time': 12, 'SoilDepth': 15, 'lat': 108, 'lon': 675}
+                ds = ds.chunk(chunk_dict)
+            elif 'nsnow' in ds.dims.keys():
+                chunk_dict = {'time': 12, 'lat': 108, 'lon': 675, 'nsnow': 5}
+                ds = ds.chunk(chunk_dict)
+            elif 'nsompool' in ds.dims.keys():
+                chunk_dict = {'time': 12, 'lat': 108, 'lon': 675, 'nsompool': 11}
+                ds = ds.chunk(chunk_dict)
+            else:
+                chunk_dict = {'time': 12, 'lat': 108, 'lon': 675}
+                ds = ds.chunk(chunk_dict)
+        else:
+            if 'nsoil' in ds.dims.keys():
+                ds = ds.rename({'nsoil': 'SoilDepth'})
+                chunk_dict = {'time': 73, 'SoilDepth': 15, 'lat': 108, 'lon': 675}
+                ds = ds.chunk(chunk_dict)
+            elif 'nsnow' in ds.dims.keys():
+                chunk_dict = {'time': 73, 'lat': 108, 'lon': 675, 'nsnow': 5}
+                ds = ds.chunk(chunk_dict)
+            elif 'nsompool' in ds.dims.keys():
+                chunk_dict = {'time': 73, 'lat': 108, 'lon': 675, 'nsompool': 11}
+                ds = ds.chunk(chunk_dict)
+            else:
+                chunk_dict = {'time': 73, 'lat': 108, 'lon': 675}
+                ds = ds.chunk(chunk_dict)
+        ds = ds.transpose('time', 'SoilDepth', 'lat', 'lon', 'nsnow', 'nsompool', missing_dims='ignore')
+        with open(Path(config['output_dir'] + 'debug_lpjguess.txt'), 'a') as pf:
+            print(ds, file=pf)
+            print(ds.encoding, file=pf)
+        # clear encoding chunks
+        with open(Path(config['output_dir'] + 'debug_lpjguess.txt'), 'a') as pf:
+            print(ds.encoding, file=pf)
+        # output netcdf
+        comp = dict(zlib=config['nc_write']['zlib'], shuffle=config['nc_write']['shuffle'],\
+                complevel=config['nc_write']['complevel'], _FillValue=np.nan, chunksizes=list(chunk_dict.values()))
+        encoding = {var: comp for var in ds.data_vars}
+        ds.to_netcdf(output_file, mode="w", encoding=encoding, \
+                format=config['nc_write']['format'], \
+                engine=config['nc_write']['engine'])
+        # try to close file connection
+        try:
+            ds.close()
+        except:
+            pass
+        # try to delete data
+        try:
+            del ds
+        except:
+            pass
+    
 # function to fix timesteps in preprocess step and subset to variables of interest
-def preprocess_JSBACH(ds, config):
+def preprocess_JSBACH(ds, config, sim_type):
+    dsc = ds.copy(deep=True)
+    with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
+        print('opening' + dsc.encoding['source'], file=pf)
+        print(dsc, file=pf)
     # replace time indexes, decimal numbers not allowed in cftime, also rh ends with fillvalues
     # generally a dimension shouldnt have fill values it should simply be missing
-    if ds.sizes['time'] >= 1000:
+    dsc.time.attrs['units'] = 'days since 1998-01-01 00:00:00'
+    if dsc.sizes['time'] > 1000:
         # if index is daily then replace with integers (this fixes decimal issue and fill value issue
-        ds = ds.assign_coords({"time": range(730, 8765+1)})
+        dsc = dsc.assign_coords({"time": np.arange(730,8765+1).astype(int)})
+        dsc.time.attrs['standard_name'] = 'time'
+        dsc.time.attrs['units'] = 'days since 1998-01-01 00:00:00'
+        dsc.time.attrs['calendar'] = 'proleptic_gregorian'
+        dsc.time.attrs['axis'] = 'T'
+        u, c = np.unique(dsc.time.values, return_counts=True)
+        dup = u[c > 1] 
+    else:
+        dsc = xr.decode_cf(dsc, use_cftime=True)
+        with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
+            print('ds after decode cf:', file=pf)
+            print(dsc, file=pf)
+        new_index = xr.cftime_range(start='2000-01-01', periods=8036, calendar='proleptic_gregorian', freq='1D')
+        with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
+            print('new index:', file=pf)
+            print(new_index, file=pf)
+        dsc = dsc.reindex({'time': new_index})
+        with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
+            print('ds after reindex:', file=pf)
+            print(dsc, file=pf)
+        dsc = dsc.resample(time='1D').interpolate('linear')
+        with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
+            print('ds after resample:', file=pf)
+            print(dsc, file=pf)
+        dsc = dsc.assign_coords({'time': np.arange(730,8765+1)})
+        with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
+            print('ds after replacing index with integers:', file=pf)
+            print(dsc, file=pf)
+        dsc.time.attrs['standard_name'] = 'time'
+        dsc.time.attrs['units'] = 'days since 1998-01-01 00:00:00'
+        dsc.time.attrs['calendar'] = 'proleptic_gregorian'
+        dsc.time.attrs['axis'] = 'T'
+        u, c = np.unique(dsc.time.values, return_counts=True)
+        dup = u[c > 1] 
     # replace attributes that are lost from the coord assignment step
-    ds.time.attrs['standard_name'] = 'time'
-    ds.time.attrs['units'] = 'days since 1998-01-01 00:00:00'
-    ds.time.attrs['calendar'] = 'proleptic_gregorian'
-    ds.time.attrs['axis'] = 'T'
+    #ds.time.attrs['standard_name'] = 'time'
+    #ds.time.attrs['units'] = 'days since 1998-01-01 00:00:00'
+    #ds.time.attrs['calendar'] = 'proleptic_gregorian'
+    #ds.time.attrs['axis'] = 'T'
     # reverse lat index
-    ds = ds.sortby('lat', ascending=True) #reindex(lat=ds.lat[::-1])
-    return ds
+    dsc = dsc.sortby('lat', ascending=True) #reindex(lat=ds.lat[::-1])
+    with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
+        print('proprocess complete:', file=pf)
+        print(dsc, file=pf)
+        print('duplicate times:', file=pf)
+        print(dup, file=pf)
+        print('time:', file=pf)
+        print(dsc.time, file=pf)
+    return dsc
 
 # preprocess files that are parsed by time
 def preprocess_ecosys(ds, config, sim_type):
-        # copy the file
-        dsc = ds.copy(deep=True)
-        # decode to cftime
-        dsc = xr.decode_cf(dsc, use_cftime=True)
-        # save time values outside of dataset
-        ds_time = dsc.time.values
-        # create and fill empty list with variables
-        ds_list = []
-        for i in dsc.data_vars:
-            ds_sub = dsc[i]
-            ds_list.append(ds_sub)
-        # combine the datarrays back into a dataset
-        dsc = xr.combine_by_coords(ds_list)
-        # rename doy to time for dim and coord 
-        dsc = dsc.rename_dims({'doy': 'time'})
-        dsc = dsc.rename({'doy': 'time'})
-        # set coord values to time index and set attributes
-        dsc.coords['time'] = ds_time
-        #dsc['time'].attrs['long_name'] = "time"
-        #dsc['time'].attrs['long_name'] = "time"
-        #dsc['time'].attrs['units'] = 'days since 1901-01-01 00:00:00'
-        # calculate TotalResp and remake attributes
-        if 'ECO_RH' in dsc.data_vars:
-            dsc['TotalResp'] = dsc['ECO_RH'] + (dsc['ECO_GPP'] - dsc['ECO_NPP'])
-            dsc['TotalResp'].attrs['long_name'] = 'Autotrophic + heterotrophic respiration'
-            dsc['TotalResp'].attrs['units'] = 'gC m-2 day-1'
-        # reorder lat
-        dsc = dsc.sortby('lat', ascending=True)
-        # change to noleap calendar to remove leapdays
-        dsc = dsc.convert_calendar('noleap', use_cftime=True)
-        # return preprocessed file to open_mfdataset
-        return dsc
+    # copy the file
+    dsc = ds.copy(deep=True)
+    # decode to cftime
+    dsc = xr.decode_cf(dsc, use_cftime=True)
+    # save time values outside of dataset
+    ds_time = dsc.time.values
+    # create and fill empty list with variables
+    ds_list = []
+    for i in dsc.data_vars:
+        ds_sub = dsc[i]
+        ds_list.append(ds_sub)
+    # combine the datarrays back into a dataset
+    dsc = xr.combine_by_coords(ds_list)
+    # rename doy to time for dim and coord 
+    dsc = dsc.rename_dims({'doy': 'time'})
+    dsc = dsc.rename({'doy': 'time'})
+    # set coord values to time index and set attributes
+    dsc.coords['time'] = ds_time
+    #dsc['time'].attrs['long_name'] = "time"
+    #dsc['time'].attrs['long_name'] = "time"
+    #dsc['time'].attrs['units'] = 'days since 1901-01-01 00:00:00'
+    # calculate TotalResp and remake attributes
+    if 'ECO_RH' in dsc.data_vars:
+        dsc['TotalResp'] = dsc['ECO_RH'] + (dsc['ECO_GPP'] - dsc['ECO_NPP'])
+        dsc['TotalResp'].attrs['long_name'] = 'Autotrophic + heterotrophic respiration'
+        dsc['TotalResp'].attrs['units'] = 'gC m-2 day-1'
+    # reorder lat
+    dsc = dsc.sortby('lat', ascending=True)
+    # change to noleap calendar to remove leapdays
+    dsc = dsc.convert_calendar('noleap', use_cftime=True)
+    # return preprocessed file to open_mfdataset
+    return dsc
 
 # preprocess files that are parsed by time
 def preprocess_time(ds, config):
     var_keep = config['subset_vars']
     return ds[var_keep]
+
+# preprocess files that are parsed by variable
+def preprocess_CLASSIC(ds, config, sim_type):
+    dsc = ds.copy(deep=True)
+    # check for TotalResp file to fix mislabeled variable (should be TotalResp but is HeteroResp in file)
+    if 'TotalResp' in dsc.encoding['source']:
+        dsc['TotalResp'] = dsc['HeteroResp']
+        dsc = dsc.drop_vars(['HeteroResp'])
+    # check for NEE file to fix mislabeled variable (should be NEE but is HeteroResp in file)
+    if 'NEE' in dsc.encoding['source']:
+        dsc['NEE'] = dsc['HeteroResp']
+        dsc = dsc.drop_vars(['HeteroResp'])
+    # print dataset info
+    with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
+        print(dsc, file=pf)
+    # return only subset variables of interest from config file
+    return dsc
+
+# preprocess files that are parsed by variable
+def preprocess_LPJ_GUESS_ML(ds, config, sim_type):
+    dsc = ds.copy(deep=True)
+    # check for TotalResp file to fix mislabeled variable (should be TotalResp but is HeteroResp in file)
+    if 'NSOM' in dsc.encoding['source']:
+        for var in dsc.data_vars:
+            var_rename = 'N_' + var
+            dsc[var_rename] = dsc[var]
+            dsc = dsc.drop_vars([var])
+    # check for NEE file to fix mislabeled variable (should be NEE but is HeteroResp in file)
+    if 'CSOM' in dsc.encoding['source']:
+        for var in dsc.data_vars:
+            var_rename = 'C_' + var
+            dsc[var_rename] = dsc[var]
+            dsc = dsc.drop_vars([var])
+    # print dataset info
+    with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
+        print(dsc, file=pf)
+        print('encoding for fillvalue', file=pf)
+        for var in dsc.data_vars:
+            print('variable: ' + var, file=pf)
+            print(dsc[var].encoding['_FillValue'], file=pf)
+    # return only subset variables of interest from config file
+    return dsc
+
+def preprocess_LPJ_GUESS(ds, config, sim_type):
+    dsc = ds.copy(deep=True)
+    with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
+        print(dsc, file=pf)
+        print('encoding for fillvalue', file=pf)
+        for var in dsc.data_vars:
+            print('variable: ' + var, file=pf)
+            print(dsc[var].encoding['_FillValue'], file=pf)
+    return dsc
 
 # preprocess files that are parsed by variable
 def preprocess_var(ds, config):
@@ -3053,7 +3728,7 @@ def process_simulation_files(input_list, top_config):
             # assign engine used to open netcdf files from config
             engine = config['nc_read']['engine']
             # set kwargs to mask_and_scale=True and decode_times=False for individual files passed to open_mfdataset
-            kwargs = {"mask_and_scale": False, "decode_times": False}
+            kwargs = {"mask_and_scale": True, "decode_times": False}
             # match the combination type with how files should be merged
             match config['merge_type']:
                 case 'time':
@@ -3062,64 +3737,120 @@ def process_simulation_files(input_list, top_config):
                     if config['model_name'] == 'UVic-ESCM':
                         # open using mfdataset which will auto merge variables, but preprocess away incorrect time indexes 
                         ds = xr.open_mfdataset(sim_files, parallel=True, engine=engine, chunks=chunk_read, preprocess=partial_time, **kwargs)
-                        # extract fill value from ra/rh
-                        fill_value = ds['L_veggpp'].attrs['FillValue']
-                        # remove all fill values before calculating TotalResp
-                        ds['L_veggpp'] = ds['L_veggpp'].where(ds['L_veggpp'] != fill_value)
-                        ds['L_vegnpp'] = ds['L_vegnpp'].where(ds['L_vegnpp'] != fill_value)
-                        ds['L_soilresp'] = ds['L_soilresp'].where(ds['L_soilresp'] != fill_value)
-                        # calculate auto_resp
+                        # # extract fill value from ra/rh
+                        # fill_value = ds['L_veggpp'].attrs['FillValue']
+                        # # remove all fill values before calculating TotalResp
+                        # ds['L_veggpp'] = ds['L_veggpp'].where(ds['L_veggpp'] != fill_value)
+                        # ds['L_vegnpp'] = ds['L_vegnpp'].where(ds['L_vegnpp'] != fill_value)
+                        # ds['L_soilresp'] = ds['L_soilresp'].where(ds['L_soilresp'] != fill_value)
+                        # # calculate auto_resp
                         ds['auto_resp'] = ds['L_veggpp'] - ds['L_vegnpp']
+                        # sum pfts to remove pft dimension
+                        ds = ds.sum(dim='pft', keep_attrs=True, skipna=True)
                         # calculate TotalResp as auto + hetero resp
                         ds['TotalResp'] = ds['auto_resp'] + ds['L_soilresp']
-                        ds['TotalResp'].encoding['_FillValue'] = fill_value
-                        ds['L_gndtemp'].encoding['_FillValue'] = fill_value
-                        ds = ds.drop_vars(['L_veggpp','L_vegnpp','L_soilresp','auto_resp'])
-                        # choose arctic crass pft to reduce dimensions of TotalResp
-                        ds = ds.sel(pft=3, method="nearest")
-                        ds = ds.drop_vars('pft')
+                        # ds['TotalResp'].encoding['_FillValue'] = fill_value
+                        # ds['L_gndtemp'].encoding['_FillValue'] = fill_value
+                        # mask Uvic
+                        ds = ds.where(ds.G_mskt < 1)
+                        # drop vars/mask
+                        ds = ds.drop_vars(['L_vegnpp','L_soilresp','auto_resp','G_mskt'])
                         with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
                             print(ds, file=pf)
+                    elif config['model_name'] == 'ELM1-ECA':
+                        # open zarr files
+                        zarr_kwargs = dict(decode_cf=True, decode_times=False)
+                        ds = xr.open_mfdataset(sim_files, parallel=True, engine="zarr", **zarr_kwargs)
+                        # check files
+                        with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
+                            print(ds, file=pf)
+                        # calculate CN
+                        ds['CN'] = ds['TOTSOMC'] / ds['TOTSOMN']
                     else:
                         # open using mfdataset and merge using combine_by_coords
                         ds = xr.open_mfdataset(sim_files, parallel=True, engine=engine, chunks=chunk_read, preprocess=partial_time, **kwargs)
                 case 'variables':
                     if config['model_name'] == 'JSBACH':
                         # create functools.partial function to pass subset variable through to preprocess
-                        partial_JSBACH = partial(preprocess_JSBACH, config=config) 
+                        partial_JSBACH = partial(preprocess_JSBACH, config=config, sim_type=sim_type) 
                         # open using mfdataset which will auto merge variables, but preprocess away incorrect time indexes 
                         ds = xr.open_mfdataset(sim_files, parallel=True, engine=engine, chunks=chunk_read, preprocess=partial_JSBACH, **kwargs)
-                        # extract fill value from ra/rh
-                        fill_value = ds['ra'].attrs['_FillValue']
-                        d_type = ds['ra'].encoding['dtype']
-                        orig_shape = ds['ra'].encoding['original_shape']
-                        # remove all fill values before calculating TotalResp
-                        ds['ra'] = ds['ra'].where(ds['ra'] != fill_value)
-                        ds['rh'] = ds['rh'].where(ds['rh'] != fill_value)
+                        with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
+                            print('open_mfdataset completed', file=pf)
+                            print(ds, file=pf)
+                        # # extract fill value from ra/rh
+                        # fill_value = ds['ra'].attrs['_FillValue']
+                        # d_type = ds['ra'].encoding['dtype']
+                        # orig_shape = ds['ra'].encoding['original_shape']
+                        # # remove all fill values before calculating TotalResp
+                        # ds['gpp'] = ds['gpp'].where(ds['gpp'] != fill_value)
+                        # ds['nee'] = ds['nee'].where(ds['nee'] != fill_value)
                         # calculate total resp and assign _FillValue
-                        ds['TotalResp'] = ds['ra'] + ds['ra']
-                        ds['TotalResp'].encoding['_FillValue'] = fill_value
-                        ds['TotalResp'].encoding['dtype'] = d_type
-                        ds['TotalResp'].encoding['original_shape'] = orig_shape
-                        # clear soil_temperatures encoding
-                        fill_value = ds['soil_temperature'].attrs['_FillValue']
-                        d_type = ds['soil_temperature'].encoding['dtype']
-                        orig_shape = ds['soil_temperature'].encoding['original_shape']
-                        file_source = ds['soil_temperature'].encoding['source']
-                        ds['soil_temperature'].encoding = {}
-                        ds['soil_temperature'].attrs = {}
-                        ds['soil_temperature'].encoding['source'] = file_source
-                        ds['soil_temperature'].encoding['dtype'] = d_type
-                        ds['soil_temperature'].encoding['original_shape'] = orig_shape
-                        ds['soil_temperature'].encoding['_FillValue'] = fill_value
-                        # subset to variables of interest
+                        ################ 
+                        # submitted file shows nee=TotalResp-gpp, thus we have to add here instead of subtract compared to other submissions
+                        ds['TotalResp'] = ds['nee'] + ds['gpp']
+                        ################
+                        # ds['TotalResp'].encoding['_FillValue'] = fill_value
+                        # ds['TotalResp'].encoding['dtype'] = d_type
+                        # ds['TotalResp'].encoding['original_shape'] = orig_shape
+                        # # clear soil_temperatures encoding
+                        # fill_value = ds['soil_temperature'].attrs['_FillValue']
+                        # d_type = ds['soil_temperature'].encoding['dtype']
+                        # orig_shape = ds['soil_temperature'].encoding['original_shape']
+                        # file_source = ds['soil_temperature'].encoding['source']
+                        # ds['soil_temperature'].encoding = {}
+                        # ds['soil_temperature'].attrs = {}
+                        # ds['soil_temperature'].encoding['source'] = file_source
+                        # ds['soil_temperature'].encoding['dtype'] = d_type
+                        # ds['soil_temperature'].encoding['original_shape'] = orig_shape
+                        # ds['soil_temperature'].encoding['_FillValue'] = fill_value
+                        # # subset to variables of interest
                         ds = ds[config['subset_vars']]
+                    elif config['model_name'] == 'CLASSIC':
+                        # create functools.partial function to pass subset variable through to preprocess
+                        partial_CLASSIC = partial(preprocess_CLASSIC, config=config, sim_type=sim_type) 
+                        # auto merge by variables
+                        ds = xr.open_mfdataset(sim_files, parallel=True, engine=engine, chunks=chunk_read, preprocess=partial_CLASSIC, combine='nested', **kwargs)
+                        ds = ds[config['subset_vars']]
+                        with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
+                            print(ds, file=pf)
+                        # calculate CN
+                        ds['CN'] = ds['cSoil'] / ds['nSoil']
+                    elif config['model_name'] == 'LPJ-GUESS-ML':
+                        # create functools.partial function to pass subset variable through to preprocess
+                        partial_LPJ_GUESS_ML = partial(preprocess_LPJ_GUESS_ML, config=config, sim_type=sim_type) 
+                        # auto merge by variables
+                        ds = xr.open_mfdataset(sim_files, parallel=True, engine=engine, chunks=chunk_read, preprocess=partial_LPJ_GUESS_ML, combine='nested', **kwargs)
+                        # calculate CN
+                        ds['SoilC'] =  ds['C_SOILMETA'] + ds['C_SOILSTRUCT'] + ds['C_SOILFWD'] + ds['C_SOILCWD'] + ds['C_SOILMICRO'] + ds['C_SLOWSOM'] + ds['C_PASSIVESOM']
+                        ds['SoilN'] =  ds['N_SOILMETA'] + ds['N_SOILSTRUCT'] + ds['N_SOILFWD'] + ds['N_SOILCWD'] + ds['N_SOILMICRO'] + ds['N_SLOWSOM'] + ds['N_PASSIVESOM']
+                        ds['CN'] = ds['SoilC'] / ds['SoilN']
+                        ds = ds[config['subset_vars']]
+                        with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
+                            print(ds, file=pf)
+                    elif config['model_name'] == 'LPJ-GUESS':
+                        # create functools.partial function to pass subset variable through to preprocess
+                        partial_LPJ_GUESS = partial(preprocess_LPJ_GUESS, config=config, sim_type=sim_type) 
+                        # auto merge by variables
+                        with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
+                            print('begin opening datasets for ' + sim_type, file=pf)
+                        ds = xr.open_mfdataset(sim_files, parallel=True, engine=engine, chunks=chunk_read, preprocess=partial_LPJ_GUESS, combine='nested', **kwargs)
+                        # calculate CN
+                        ds['SoilC'] =  ds.SOMpool.sel(nsompool=['SOILSTRUCT','SOILMICRO','SOILMETA','SLOWSOM','PASSIVESOM']).sum(dim='nsompool')
+                        # calculate totalresp
+                        ds['TotalResp'] = ds['NEE'] + ds['GPP']
+                        # subset variables of interest
+                        ds = ds[config['subset_vars']]
+                        with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
+                            print(ds, file=pf)
                     else:
                         # create functools.partial function to pass subset variable through to preprocess
                         partial_var = partial(preprocess_var, config=config) 
                         # auto merge by variables
-                        ds = xr.open_mfdataset(sim_files, parallel=True, engine=engine, chunks=chunk_read, preprocess=partial_var, **kwargs)
+                        ds = xr.open_mfdataset(sim_files, parallel=True, engine=engine, chunks=chunk_read, preprocess=partial_var, combine='nested', **kwargs)
                         ds = ds[config['subset_vars']]
+                        with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
+                            print(ds, file=pf)
                 case 'ecosys':
                     partial_ecosys = partial(preprocess_ecosys, config=config, sim_type=sim_type) 
                     # open using mfdataset which will auto merge variables, but preprocess away incorrect time indexes 
@@ -3134,12 +3865,12 @@ def process_simulation_files(input_list, top_config):
                     # loop through soil layer dataarrays, for each soil layer add a depth coord and expand dim
                     ds_list = []
                     layer_iter = 0
-                    layer_interface = config['soil_depths']
+                    layer_center = config['soil_depths']
                     layers=['TMAX_SOIL_1','TMAX_SOIL_2','TMAX_SOIL_3','TMAX_SOIL_4','TMAX_SOIL_5', \
                             'TMAX_SOIL_6','TMAX_SOIL_7','TMAX_SOIL_8','TMAX_SOIL_9','TMAX_SOIL_10', 'TMAX_SOIL_11'] 
                     for layer in layers:
                         # expand a dimension to include site and save to list
-                        ds2 = ds.assign_coords({'SoilDepth': layer_interface[layer_iter]})
+                        ds2 = ds.assign_coords({'SoilDepth': layer_center[layer_iter]})
                         ds2[layer].attrs = {}
                         ds2[layer] = ds2[layer].expand_dims('SoilDepth')
                         ds2 = ds2.rename({layer: 'SoilTemp'})
@@ -3160,7 +3891,8 @@ def process_simulation_files(input_list, top_config):
                     ds['SoilTemp'].attrs['units'] = 'Degree C' 
                     # reorde variable dimenions and remove chunking
                     ds['SoilTemp'] = ds['SoilTemp'].transpose('time', 'SoilDepth', 'lat', 'lon')
-                    ds['TotalResp'] = ds['TotalResp'].transpose('time', 'lat', 'lon')
+                    ds['ECO_RH'] = ds['ECO_RH'].transpose('time', 'lat', 'lon')
+                    ds['ECO_GPP'] = ds['ECO_GPP'].transpose('time', 'lat', 'lon')
                     #ds = ds.chunk({'time': 300, 'SoilDepth': -1, 'lat': -1, 'lon': -1})
                     # subset to variables of interest
                     ds = ds[config['subset_vars']]
@@ -3170,20 +3902,30 @@ def process_simulation_files(input_list, top_config):
                     ds = ds.astype('float32')
                     with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
                         print(ds, file=pf)
-                    # assign encoding fillvalues
-                    for var in ds.data_vars:
-                        ds[var].encoding['_FillValue'] = config['nc_write']['fillvalue']
-                    with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
-                        print(ds, file=pf)
-                        print(ds['SoilTemp'].encoding, file=pf)
-                        print(ds['TotalResp'].encoding, file=pf)
-                case 'none':
+                    # # assign encoding fillvalues
+                    # for var in ds.data_vars:
+                    #     ds[var].encoding['_FillValue'] = config['nc_write']['fillvalue']
+                    # with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
+                    #     print(ds, file=pf)
+                    #     print(ds['SoilTemp'].encoding, file=pf)
+                    #     print(ds['ECO_RH'].encoding, file=pf)
+                    #     print(ds['ECO_GPP'].encoding, file=pf)
+                case 'elm2':
                     # open single file and save to new file name
                     ds = xr.open_dataset(sim_files[0], engine=engine, chunks=chunk_read, mask_and_scale=False, decode_times=False)
                     # subset variables
                     ds = ds[config['subset_vars']]
+                    # sum all soil C and N pools
+                    ds['SoilC'] = ds['SOIL1C'] + ds['SOIL2C'] + ds['SOIL3C'] + ds['SOIL4C']
+                    ds['SoilN'] = ds['SOIL1N'] + ds['SOIL2N'] + ds['SOIL3N'] + ds['SOIL4N']
+                    ds['CN'] = ds['SoilC'] / ds['SoilN']
+                    # remove variables used for calculation
+                    ds = ds.drop_vars(['SOIL1C','SOIL2C','SOIL3C','SOIL4C','SOIL1N','SOIL2N','SOIL3N','SOIL4N'])
             # rename variables
             ds = ds.rename(config['rename_subset'])
+            with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
+                print('variables renamed', file=pf)
+                print(ds, file=pf)
             # fix models that have non-CF time conforming dates
             match config['model_name']:
                 case 'UVic-ESCM':
@@ -3211,6 +3953,9 @@ def process_simulation_files(input_list, top_config):
                     ds = ds.assign_coords({'SoilDepth': config['soil_depths']})
             # decode cftime
             ds = xr.decode_cf(ds, use_cftime=True)
+            with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
+                print('time decoded', file=pf)
+                print(ds, file=pf)
             # change calendar for JSBACH
             if config['model_name'] in ['JSBACH']:
                 var_enc = {}
@@ -3226,25 +3971,36 @@ def process_simulation_files(input_list, top_config):
                 for var in ds.data_vars:
                     for enc, enc_val in var_enc[var].items():
                         ds[var].encoding[enc] = enc_val 
+                with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
+                    print('calendar changed', file=pf)
+                    print(ds, file=pf)
             # multindex and unstack lndgrids so that lat lon become dimensions instead
-            if config['model_name'] in ['ELM2-NGEE','LPJ-GUESS']:
+            if config['model_name'] in ['ELM2-NGEE']:
                 ds = ds.set_index(lndgrid=['lat','lon'])
                 ds = ds.unstack() 
             # convert lon from -180-180 to 0-360
-            if config['model_name'] in ['ELM2-NGEE', 'ecosys']:
+            if config['model_name'] in ['ELM2-NGEE', 'ecosys', 'CLASSIC', 'LPJ-GUESS-ML']:
                 ds = ds.assign_coords({'lon': (ds.lon % 360)})
                 ds = ds.sortby('lon', ascending=True)
                 with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
                     print('adjusted lon index', file=pf)
-                    print(ds['SoilTemp'].encoding, file=pf)
-                    print(ds['TotalResp'].encoding, file=pf)
+            # # general cleaning for any unregistered missing values
+            # for var in top_config['combined_vars']:
+            #     # remove _FillValues and missing values
+            #     if config['model_name'] not in ['UVic-ESCM']:
+            #         with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
+            #             print('removing fill values for:', file=pf)
+            #             print(var, file=pf)
+            #             print(ds[var].encoding['_FillValue'], file=pf)
+            #         ds[var] = ds[var].where(ds[var] != ds[var].encoding['_FillValue'])
+            #     # remove problem data with incorrect fill values
+            #     ds[var] = ds[var].where((ds[var] > -990.0)&(ds[var] < 1.0e20))
+            # with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
+            #     print('missing vars added with all nans:',file=pf)
+            #     print(missing_vars, file=pf)
+            #     print(ds, file=pf)
             # adjust units
             for var in config['data_units']:
-                # remove _FillValues and missing values
-                if config['model_name'] != 'UVic-ESCM':
-                    ds[var] = ds[var].where(ds[var] != ds[var].encoding['_FillValue'])
-                else: 
-                    ds[var] = ds[var].where(ds[var] < 2e36)
                 # scale units
                 if config['data_units'][var]['scale_type'] == 'add':
                     ds[var] = ds[var] + config['data_units'][var]['scale_value']
@@ -3260,21 +4016,30 @@ def process_simulation_files(input_list, top_config):
                 if config['coords_units'][var]['scale_type'] == 'multiply':
                     ds[var] = ds[var] * config['coords_units'][var]['scale_value']
                     ds[var] = ds[var].assign_attrs({"units": config['coords_units'][var]['units']})
-            # add empty dataframe for missing values like WTD/ALT
+            # add empty dataframe for missing dataarrays like WTD/ALT/Cpool
             missing_vars = [i for i in top_config['combined_vars'] if i not in ds.data_vars]
+            ds_fill_3d = ds['TotalResp'].copy(deep=True)
+            ds_fill_3d.loc[:] = np.nan
+            try:
+                ds_fill_4d = ds_fill_3d.expand_dims(dim={'SoilDepth': range(1,16)}, axis=1)
+            except Exception as error:
+                with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
+                    print('No soil depth included:', file=pf)
+                    print(error, file=pf)
+                pass
             for var in missing_vars:
-                ds[var] = ds['TotalResp'].copy(deep=True)
-                ds[var].loc[:] = np.nan
-            with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
-                print('missing vars added with all nans:',file=pf)
-                print(missing_vars, file=pf)
-                print(ds, file=pf)
+                if var not in ['SoilTemp']:
+                    ds[var] = ds_fill_3d
+                else:
+                    ds[var] = ds_fill_4d
             # create 10cm soil temp average 
             # !!!!!!!!! THIS IS INCORRECT AVERAGE UNTIL REDONE WEHN LAYER THICKNESS/INTERFACES ARE KNOWN !!!!!!
             # need to create function to weight temp average by layer thickness and deal with partial thickness when 10cm is between nodes
-            ds['SoilTemp_10cm'] = ds['SoilTemp'].sel(SoilDepth=slice(0.0,0.11)).mean(dim='SoilDepth')           
+            #ds['SoilTemp_10cm'] = ds['SoilTemp'].sel(SoilDepth=slice(0.0,0.11)).mean(dim='SoilDepth')           
             # rescale from g C m-2 s-1 to g C m-2 day-1
             ds['TotalResp'] = ds['TotalResp'] * 86400  
+            ds['GPP'] = ds['GPP'] * 86400 
+            ds['NEE'] = ds['TotalResp'] - ds['GPP']
             # print out combined dataset for debugging
             with open(Path(config['output_dir'] + 'zarr_output/debug_process_simulation.txt'), 'a') as pf:
                 with np.printoptions(threshold=np.inf):
@@ -3293,12 +4058,14 @@ def process_simulation_files(input_list, top_config):
             if config['model_name'] == 'CLM5':
                 lat_df = ds['lat'].to_dataframe()
                 lon_df = ds['lon'].to_dataframe()
-                lat_df.to_csv(config['output_dir']+'zarr_output/clm5_lat.csv')
-                lon_df.to_csv(config['output_dir']+'zarr_output/clm5_lon.csv')
+                soild_df = ds['SoilDepth'].to_dataframe()
+                lat_df.to_csv(config['output_dir']+'zarr_output/clm5_lat.csv', index=False, float_format="%g")
+                lon_df.to_csv(config['output_dir']+'zarr_output/clm5_lon.csv', index=False, float_format="%g")
+                soild_df.to_csv(config['output_dir']+'zarr_output/clm5_soild.csv', index=False, float_format="%g")
             # set zarr compression and encoding
             compress = Zstd(level=6) #, shuffle=Blosc.BITSHUFFLE)
             # clear all chunk and fill value encoding/attrs
-            for var in ds:
+            for var in ds.data_vars:
                 try:
                     del ds[var].encoding['chunks']
                 except:
@@ -3311,6 +4078,10 @@ def process_simulation_files(input_list, top_config):
                     del ds[var].attrs['_FillValue']
                 except:
                     pass
+                if len(ds[var].dims) == 3:
+                    ds[var].encoding['chunks'] = (zarr_chunk_out, -1, -1)
+                elif len(ds[var].dims) == 4:
+                    ds[var].encoding['chunks'] = (zarr_chunk_out, -1, -1, -1)
             dim_chunks = {
                 'time': zarr_chunk_out,
                 'SoilDepth': -1,
@@ -3320,7 +4091,7 @@ def process_simulation_files(input_list, top_config):
             with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
                 print('data rechunked',file=pf)
                 print(ds, file=pf)
-            encode = {var: {'_FillValue': np.nan, 'compressor': compress} for var in ds.data_vars}
+            encode = {var: {'_FillValue': np.nan, 'compressor': compress, 'chunks': ds[var].encoding['chunks']} for var in ds.data_vars}
             #    'SoilTemp': {'_FillValue': np.NaN, 'compressor': compress},
             #    'TotalResp': {'_FillValue': np.NaN, 'compressor': compress}}
             #comp = dict(compressor = compress, _FillValue=np.NaN)
@@ -3341,7 +4112,7 @@ def process_simulation_files(input_list, top_config):
 # output variable subset netcdf
 def aggregate_regional_sims(config):
     # set output file location
-    with open(Path(config['output_dir'] + 'zarr_output/debug_agg_sims.txt'), 'w') as pf:
+    with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_agg_sims.txt'), 'w') as pf:
         print(config, file=pf)
     # open b2, otc, sf zarr files, add simulation dimension, create list to merge
     ds_list = []
@@ -3353,73 +4124,92 @@ def aggregate_regional_sims(config):
             out_file = config['output_dir'] + 'zarr_output/' + config['model_name'] + \
                                 '/WrPMIP_Pan-Arctic_' + config['model_name'] + '_sims_merged.zarr'
             # open model file for current simulation
-            ds = xr.open_zarr(ds_file, chunks='auto', chunked_array_type='dask', use_cftime=True, mask_and_scale=False) 
+            ds_tmp = xr.open_zarr(ds_file, chunks='auto', chunked_array_type='dask', use_cftime=True, mask_and_scale=False) 
             # assign simulation diension
-            ds = ds.assign_coords({'sim': sim})
-            ds = ds.expand_dims('sim')
+            ds_tmp = ds_tmp.assign_coords({'sim': sim})
+            ds_tmp = ds_tmp.expand_dims('sim')
             # append dataset to list for later merging
-            ds_list.append(ds)
+            ds_list.append(ds_tmp)
         except Exception as error:
-            with open(Path(config['output_dir'] + 'debug_agg_sims.txt'), 'a') as pf:
+            with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_agg_sims.txt'), 'a') as pf:
                 print(error, file=pf)
             pass
-    with open(Path(config['output_dir'] + 'zarr_output/debug_agg_sims.txt'), 'a') as pf:
+    with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_agg_sims.txt'), 'a') as pf:
         print('dataset list created', file=pf)
     # merge dataset
-    ds_sims = xr.concat(ds_list, dim='sim')
-    with open(Path(config['output_dir'] + 'zarr_output/debug_agg_sims.txt'), 'a') as pf:
+    ds = xr.concat(ds_list, dim='sim')
+    with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_agg_sims.txt'), 'a') as pf:
+        print('merged sims:', file=pf)
+        print(ds, file=pf)
         print('new model chunks:', file=pf)
-        print(ds_sims['SoilTemp'].encoding['chunks'], file=pf)
+        print(ds['SoilTemp'].encoding['chunks'], file=pf)
+        print('ALT in Aug in to check sign:', file=pf)
+        print(ds['ALT'].sel(time=slice('2010-08-01','2010-08-07'), sim='b2').sel(lat=210, lon=64, method='nearest').values, file=pf)
+        print('WTD in Aug to check sign:', file=pf)
+        print(ds['WTD'].sel(time=slice('2010-08-01','2010-08-07'), sim='b2').sel(lat=210, lon=64, method='nearest').values, file=pf)
     # set zarr compression and encoding
     compress = Zstd(level=6) #, shuffle=Blosc.BITSHUFFLE)
     # clear all chunk and fill value encoding/attrs
-    for var in ds_sims:
+    for var in ds.data_vars:
         try:
-            del ds_sims[var].encoding['chunks']
+            del ds[var].encoding['chunks']
         except:
             pass
         try:
-            del ds_sims[var].encoding['_FillValue']
+            del ds[var].encoding['_FillValue']
         except:
             pass
         try:
-            del ds_sims[var].attrs['_FillValue']
+            del ds[var].attrs['_FillValue']
         except:
             pass
+        if len(ds[var].dims) == 4:
+            ds[var].encoding['chunks'] = (1, 365, -1, -1)
+        elif len(ds[var].dims) == 5:
+            ds[var].encoding['chunks'] = (1, 365, -1, -1, -1)
     dim_chunks = {
+        'sim': 1,
         'time': 365,
         'SoilDepth': -1,
         'lat': -1,
-        'lon': -1,
-        'sim': 1}
-    ds_sims = ds_sims.chunk(dim_chunks) 
-    encode = {var: {'_FillValue': np.nan, 'compressor': compress} for var in ds_sims.data_vars}
+        'lon': -1}
+    ds = ds.chunk(dim_chunks) 
+    encode = {var: {'_FillValue': np.nan, 'compressor': compress, 'chunks': ds[var].encoding['chunks']} for var in ds.data_vars}
     # output regional zarr for each model with b2,otc,sf added as siulation dimension 
-    ds_sims.to_zarr(out_file, encoding=encode, mode="w")
+    ds.to_zarr(out_file, encoding=encode, mode="w")
+    # close file connections
+    for ds_tmp in ds_list:
+        try:
+            ds_tmp.close()
+        except:
+            pass
+    try:
+        ds.close()
+    except:
+        pass
 
 # output final harmonized pan-arctic regional database
 def harmonize_regional_models(config):
+    with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_harmonization.txt'), 'w') as pf:     
+        print('harmonizing ' + config['model_name'] + ':', file=pf)
     # context manager to keep dask from auto-rechunking
     with dask.config.set(**{'array.slicing.split_large_chunks': False}):
-        try:
-            # create name of file to open for each model
-            ds_file = config['output_dir'] + 'zarr_output/' + config['model_name'] + \
-                        '/WrPMIP_Pan-Arctic_' + config['model_name'] + '_sims_merged.zarr'
-            out_file = config['output_dir'] + 'zarr_output/' + config['model_name'] + \
-                        '/WrPMIP_Pan-Arctic_' + config['model_name'] + '_sims_harmonized.zarr'
-            # open model zarr
-            ds = xr.open_zarr(ds_file, chunks='auto', chunked_array_type='dask', use_cftime=True, mask_and_scale=False) 
-            # assign model names as new dimension to merge on
-            ds = ds.assign_coords({'model': config['model_name']})
-            ds = ds.expand_dims('model')
-        except Exception as error:
-            with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_harmonized_model.txt'), 'a') as pf:
-                print(error, file=pf)
-            pass
-        clm_lon = pd.read_csv(config['output_dir']+'zarr_output/clm5_lon.csv')['lon']
-        clm_lat = pd.read_csv(config['output_dir']+'zarr_output/clm5_lat.csv')['lat']
-        clm5_soil_depths = np.array([0.01,0.04,0.09,0.16,0.26,0.4,0.58,0.8,1.06,1.36,1.7,2.08,2.5,2.99,3.58, \
-                                     4.27,5.06,5.95,6.94,8.03,9.795, 13.32777, 19.48313, 28.87072, 41.99844])
+        # create name of file to open for each model
+        ds_file = config['output_dir'] + 'zarr_output/' + config['model_name'] + \
+                    '/WrPMIP_Pan-Arctic_' + config['model_name'] + '_sims_merged.zarr'
+        out_file = config['output_dir'] + 'zarr_output/' + config['model_name'] + \
+                    '/WrPMIP_Pan-Arctic_' + config['model_name'] + '_sims_harmonized.zarr'
+        # open model zarr
+        ds = xr.open_zarr(ds_file, chunks='auto', chunked_array_type='dask', use_cftime=True, mask_and_scale=False) 
+        # assign model names as new dimension to merge on
+        mod = config['model_name']
+        mod_dict = config['models']
+        ds = ds.assign_coords({'model': mod_dict[mod]})
+        ds = ds.expand_dims('model')
+        # save clm lat,lon,soil depths for interpolation of other models
+        clm_lon = pd.read_csv(config['output_dir']+'zarr_output/clm5_lon.csv', index_col=False, float_precision='round_trip')['lon']
+        clm_lat = pd.read_csv(config['output_dir']+'zarr_output/clm5_lat.csv', index_col=False, float_precision='round_trip')['lat']
+        clm_soild =  pd.read_csv(config['output_dir']+'zarr_output/clm5_soild.csv', index_col=False, float_precision='round_trip')['SoilDepth'] 
         # subset/inpterplote models to clm5 grid/extent
         if config['model_name'] not in ['CLM5','CLM5-ExIce']:
             # read in clm lat/lon, make comparison da, interp_like to match grid size/extent
@@ -3432,22 +4222,56 @@ def harmonize_regional_models(config):
                                 lat=(['lat'],clm_lat)))
             ds = ds.interp_like(like_array, method="nearest", kwargs={'fill_value': np.nan})
             # interpolate all model depths to clm5 depths by cubic spline interpolation/extrapolation
-            like_array = xr.DataArray(clm5_soil_depths, dims=['SoilDepth'], coords={'SoilDepth': clm5_soil_depths})
-            ds = ds.interp_like(like_array, method="cubic", kwargs={'fill_value':'extrapolate'})
-        # replace soilDepth dim with integers
-        ds = ds.assign_coords({'SoilDepth': range(1,len(clm5_soil_depths)+1)})
+            #like_array = xr.DataArray(clm_soild, dims=['SoilDepth'], coords={'SoilDepth': clm_soild})
+            #fake_data = np.zeros(len(clm_soild))
+            #like_array = xr.DataArray(
+            #                data=fake_data,
+            #                dims=['SoilDepth'],
+            #                coords={'SoilDepth': clm_soild})
+            if config['model_name'] not in ['LPJ-GUESS-ML']:
+                ds_soiltemp_interp = ds['SoilTemp'].interp(SoilDepth=clm_soild, method="linear", kwargs={'fill_value':'extrapolate'})
+                ds = ds.drop_dims(['SoilDepth'])
+                with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_harmonization.txt'), 'a') as pf:
+                    print('dropped soiltemp dataarray from dataset:', file=pf)
+                    print(ds, file=pf)
+                ds['SoilTemp'] = ds_soiltemp_interp
+                with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_harmonization.txt'), 'a') as pf:
+                    print('added interp soiltemp dataarray to dataset:', file=pf)
+                    print(ds, file=pf)
+                    print('time frequency:', file=pf)
+                    print(ds['time'], file=pf)
+                del ds_soiltemp_interp
+                # replace soilDepth dim with integers
+                ds = ds.assign_coords({'SoilDepth': range(0,len(clm_soild))})
+                # calculate 10cm soil average
+                coords = dict(SoilDepth=('SoilDepth', [0,1,2]))
+                weights = xr.DataArray([0.2,0.4,0.4], dims=('SoilDepth',), coords=coords)
+                ds['10cm_SoilTemp'] = ds['SoilTemp'].isel(SoilDepth = [0,1,2]).weighted(weights).mean(dim='SoilDepth')
+            else:
+                ds['10cm_SoilTemp'] = ds['SoilTemp'].isel(SoilDepth = 0, drop=True)
+                ds = ds.assign_coords({'SoilDepth': range(0,15)})
+                ds = ds.reindex({'SoilDepth': range(0,len(clm_soild))})
+                ds['SoilTemp'].loc[:] = np.nan
+        if config['model_name'] == 'UVic-ESCM':
+            # resample to daily timestep
+            ds = ds.resample(time='1D').asfreq()
+            ds = ds.transpose('model','sim','time','SoilDepth','lat','lon', missing_dims='ignore')
+        if config['model_name'] in ['CLM5','CLM5-ExIce']:
+            # replace soilDepth dim with integers
+            ds = ds.assign_coords({'SoilDepth': range(0,len(clm_soild))})
+            # calculate 10cm soil average
+            coords = dict(SoilDepth=('SoilDepth', [0,1,2]))
+            weights = xr.DataArray([0.2,0.4,0.4], dims=('SoilDepth',), coords=coords)
+            ds['10cm_SoilTemp'] = ds['SoilTemp'].isel(SoilDepth = [0,1,2]).weighted(weights).mean(dim='SoilDepth')
+        # reindex time from 2000-01-01 00:00:00 to 2021-12-31 00:00:00
+        ds = ds.reindex({'time': xr.cftime_range(start='2000-01-01 00:00:00', end='2022-12-31 00:00:00', freq='D', calendar='noleap')})
         # check harmonzied dim
-        with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_harmonized_models.txt'), 'a') as pf:
+        with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_harmonization.txt'), 'a') as pf:
             with np.printoptions(threshold=np.inf):
-                print(config['model_name'] + ':\n', file=pf)
-                print('Combined dataset before rechunking', file=pf)
+                print(mod + ':\n', file=pf)
                 print(ds, file=pf)
-                # print('clm5 imported lat:', file=pf)
-                # print(clm_lat, file=pf)
-                # print('clm5 imported lon:', file=pf)
-                # print(clm_lon, file=pf)
                 print('time:', file=pf)
-                print(ds['time'].head(), file=pf)
+                print(ds['time'], file=pf)
                 print('lat:', file=pf)
                 print(ds['lat'].values, file=pf)
                 print('lon:', file=pf)
@@ -3470,17 +4294,27 @@ def harmonize_regional_models(config):
                 del ds[var].attrs['_FillValue']
             except:
                 pass
+            if len(ds[var].dims) == 5:
+                ds[var].encoding['chunks'] = (1, 1, 365, -1, -1)
+            elif len(ds[var].dims) == 6:
+                ds[var].encoding['chunks'] = (1, 1, 365, -1, -1, -1)
         dim_chunks = {
+            'model': 1,
+            'sim': 1,
             'time': 365,
             'SoilDepth': -1,
-            'lat': 20,
-            'lon': -1,
-            'sim': 1,
-            'model': 1}
+            'lat': -1,
+            'lon': -1}
         ds = ds.chunk(dim_chunks) 
-        encode = {var: {'_FillValue': np.NaN, 'compressor': compress} for var in ds.data_vars}
+        encode = {var: {'_FillValue': np.nan, 'compressor': compress, 'chunks': ds[var].encoding['chunks']} for var in ds.data_vars}
         # output regional zarr of entire pan-acrtic for all models and b2,otc,sf simulations 
         ds.to_zarr(out_file, encoding=encode, mode="w")
+        # close file connections
+        try:
+            ds.close()
+        except Exception as error:
+            print(error)
+            pass
 
 # output variable subset netcdf
 def aggregate_regional_models(config_list):
@@ -3494,23 +4328,97 @@ def aggregate_regional_models(config_list):
                 ds_file = config['output_dir'] + 'zarr_output/' + config['model_name'] + \
                             '/WrPMIP_Pan-Arctic_' + config['model_name'] + '_sims_harmonized.zarr'
                 # open model file for current simulation
-                ds = xr.open_zarr(ds_file, chunks='auto', chunked_array_type='dask', use_cftime=True, mask_and_scale=False) 
+                ds_tmp = xr.open_zarr(ds_file, chunks='auto', chunked_array_type='dask', use_cftime=True, mask_and_scale=False)
                 # append dataset to list for later merging
-                ds_list.append(ds)
+                ds_list.append(ds_tmp)
             except Exception as error:
                 with open(Path(config['output_dir'] + 'zarr_output/debug_agg_harm_models.txt'), 'a') as pf:
                     print(error, file=pf)
                 pass
         with open(Path(config['output_dir'] + 'zarr_output/debug_agg_harm_models.txt'), 'a') as pf:
             print('model list created', file=pf)
+            print(ds_list, file=pf)
         # merge dataset
-        ds = xr.concat(ds_list, dim='model')
+        ds = xr.combine_by_coords(ds_list, combine_attrs='drop')
+        # change names back to models
+        ds = ds.assign_coords({'model': list(config['models'].keys())})
+        # change soil depths to clm5
+        clm_soild =  pd.read_csv(config['output_dir']+'zarr_output/clm5_soild.csv', index_col=False, float_precision='round_trip')['SoilDepth'] 
+        ds = ds.assign_coords({'SoilDepth': clm_soild})
         with open(Path(config['output_dir'] + 'zarr_output/debug_agg_harm_models.txt'), 'a') as pf:
             print('new model chunks:', file=pf)
             print(ds['SoilTemp'].encoding['chunks'], file=pf)
         # set zarr compression and encoding
         compress = Zstd(level=6) #, shuffle=Blosc.BITSHUFFLE)
         # clear all chunk and fill value encoding/attrs
+        for var in ds.data_vars:
+            try:
+                del ds[var].encoding['chunks']
+            except:
+                pass
+            try:
+                del ds[var].encoding['_FillValue']
+            except:
+                pass
+            try:
+                del ds[var].attrs['_FillValue']
+            except:
+                pass
+            if len(ds[var].dims) == 5:
+                ds[var].encoding['chunks'] = (1, 1, 365, -1, -1)
+            elif len(ds[var].dims) == 6:
+                ds[var].encoding['chunks'] = (1, 1, 365, -1, -1, -1)
+        dim_chunks = {
+            'model': 1,
+            'sim': 1,
+            'time': 365,
+            'SoilDepth': -1,
+            'lat': -1,
+            'lon': -1}
+        ds = ds.chunk(dim_chunks) 
+        encode = {var: {'_FillValue': np.nan, 'compressor': compress, 'chunks': ds[var].encoding['chunks']} for var in ds.data_vars}
+        # output regional zarr for each model with b2,otc,sf added as siulation dimension 
+        out_file = config['output_dir'] + 'zarr_output/WrPMIP_Pan-Arctic_models_harmonized.zarr'
+        ds.to_zarr(out_file, encoding=encode, mode="w")
+        # close file connections
+        for ds_tmp in ds_list:
+            try:
+                ds_tmp.close()
+            except:
+                pass
+        try:  
+            ds.close()
+        except:
+            pass
+        try:  
+            del ds 
+            del ds_list
+        except:
+            pass
+
+# open final zarr to create netcdfs
+def regional_model_zarrs_to_netcdfs(input_list):
+    config = input_list[0]
+    year = input_list[1]
+    # loop through all years of netcdf data
+    #for year in range(2000,2022):
+    # try to open, slice and save
+    try:
+        # create date-like string for slicing
+        start_year = str(year)+'-01-01'
+        end_year = str(year)+'-12-31'
+        # create read in file name from config
+        zarr_in = config['output_dir'] + 'zarr_output/' + config['model_name'] + \
+                  '/WrPMIP_Pan-Arctic_' + config['model_name'] + '_sims_harmonized.zarr'
+        # open zarr file in a context manager to avoid file collisions
+        with xr.open_zarr(zarr_in, chunks=None, use_cftime=True, mask_and_scale=False) as ds_tmp:
+            ds = ds_tmp.sel(time=slice(start_year,end_year)).copy(deep=True)
+            ds = ds.persist()
+            ds_tmp.close()
+        # create yearly output name
+        ncdf_year_out = config['output_dir'] + 'netcdf_output/' + config['model_name'] + \
+                    '/WrPMIP_Pan-Arctic_' + config['model_name'] + '_sims_harmonized_' + str(year) + '.nc'
+        # remove encoding issues created by zarr for netcdf output
         for var in ds:
             try:
                 del ds[var].encoding['chunks']
@@ -3524,179 +4432,1872 @@ def aggregate_regional_models(config_list):
                 del ds[var].attrs['_FillValue']
             except:
                 pass
-        dim_chunks = {
-            'time': 365,
-            'SoilDepth': -1,
-            'lat': 20,
-            'lon': -1,
-            'sim': 1,
-            'model': 1}
-        ds = ds.chunk(dim_chunks) 
-        encode = {var: {'_FillValue': np.nan, 'compressor': compress} for var in ds.data_vars}
-        # output regional zarr for each model with b2,otc,sf added as siulation dimension 
-        out_file = config['output_dir'] + 'zarr_output/WrPMIP_Pan-Arctic_models_harmonized.zarr'
-        ds.to_zarr(out_file, encoding=encode, mode="w")
-
-# open final zarr to create netcdfs
-def regional_model_zarrs_to_netcdfs(input_list):
-    # parse inputs
-    config = input_list[0]
-    year = input_list[1]
-    # make start/end date from year
-    start_date = str(year)+'-01-01'
-    end_date = str(year)+'-12-31'
-    # make read in and out file names
-    zarr_in = config['output_dir'] + 'zarr_output/' + config['model_name'] + \
-                '/WrPMIP_Pan-Arctic_' + config['model_name'] + '_sims_harmonized.zarr'
-    ncdf_out = config['output_dir'] + 'netcdf_output/' + config['model_name'] + \
-                '/WrPMIP_Pan-Arctic_' + config['model_name'] + '_sims_harmonized_' + str(year) + '.nc'
-    # open zarr file
-    ds = xr.open_zarr(zarr_in, chunks='auto', chunked_array_type='dask', use_cftime=True, mask_and_scale=False) 
-    # clear all chunk and fill value encoding/attrs
-    for var in ds:
-        try:
-            del ds[var].encoding['chunks']
-        except:
-            pass
-        try:
-            del ds[var].encoding['_FillValue']
-        except:
-            pass
-        try:
-            del ds[var].attrs['_FillValue']
-        except:
-            pass
-    try:
-        ds = ds.sel(time=slice(start_date,end_date))
-        #ds = ds.unify_chunks() 
-        # set netcdf encoding
+        # set netcdf encoding for yearly file
         comp = dict(zlib=config['nc_write']['zlib'], shuffle=config['nc_write']['shuffle'],\
                 complevel=config['nc_write']['complevel'],_FillValue=None) #config['nc_write']['fillvalue'])
         encoding = {var: comp for var in ds.data_vars}
         # output final netcdf(s)
-        ds.to_netcdf(ncdf_out, mode="w", encoding=encoding, \
+        ds.to_netcdf(ncdf_year_out, mode="w", encoding=encoding, \
                 format=config['nc_write']['format'], \
                 engine=config['nc_write']['engine'])
+        # remove persisted data
+        del ds
     except:
         pass
 
-# final zarr to netcdf
-def harmonized_model_zarr_to_monthly_netcdfs(input_list): 
-    # parse inputs
+def regional_harmonized_zarr_to_monthly_netcdfs(input_list):
     config = input_list[0]
     year = input_list[1]
     month = input_list[2]
-    # make start/end date from year
-    m = [0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-    day = m[month]
-    start_date = str(year) + '-' + str(month) + '-01'
-    end_date = str(year) + '-' + str(month) + '-' + str(day)
-    # make read in and out file names
-    zarr_in = config['output_dir'] + 'zarr_output/' + config['model_name'] + '/WrPMIP_Pan-Arctic_' + config['model_name'] + \
-                '_sims_harmonized.zarr'
-    ncdf_out = config['output_dir'] + 'netcdf_output/WrPMIP_Pan-Arctic_models_harmonized/WrPMIP_Pan-Arctic_models_harmonized_' \
-                +str(year)+'_'+str(month)+'.nc'
-    # open zarr file
-    ds = xr.open_zarr(zarr_in, chunks='auto', chunked_array_type='dask', use_cftime=True, mask_and_scale=False) 
-    # clear all chunk and fill value encoding/attrs
-    for var in ds:
-        try:
-            del ds[var].encoding['chunks']
-        except:
-            pass
-        try:
-            del ds[var].encoding['_FillValue']
-        except:
-            pass
-        try:
-            del ds[var].attrs['_FillValue']
-        except:
-            pass
     try:
-        ds = ds.sel(time=slice(start_date,end_date))
-        #ds = ds.unify_chunks() 
+        # create subfolder for fonal outputs if not there
+        Path(config['output_dir'] + '/netcdf_output/WrPMIP_Pan-Arctic_models_harmonized').mkdir(parents=True, exist_ok=True)
+        Path(config['output_dir'] + '/netcdf_output/WrPMIP_Pan-Arctic_models_harmonized').chmod(0o762)
+        zarr_in = config['output_dir'] + 'zarr_output/WrPMIP_Pan-Arctic_models_harmonized.zarr'
+        # loop through all years
+        #for year in range(2000,2022):
+        # define days in month
+        m = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+        # loop through yearly subset and output by month
+        #for month in range(0,12):
+        # calculate the last day of each month for slicing
+        day = m[month]
+        month = month + 1
+        # slice monthly dates
+        month_start = str(year) + '-' + str(month).zfill(2) + '-01'
+        month_end = str(year) + '-' + str(month).zfill(2) + '-' + str(day).zfill(2)
+        # create monthly output file
+        ncdf_month_out = config['output_dir'] + 'netcdf_output/WrPMIP_Pan-Arctic_models_harmonized/WrPMIP_Pan-Arctic_models_harmonized_' \
+                    + str(year) + '_' + str(month).zfill(2) + '.nc'
+        # open and subset year slice by months in context manager
+        with xr.open_zarr(zarr_in, chunks=None, use_cftime=True, mask_and_scale=False) as ds_tmp:
+            ds = ds_tmp.sel(time=slice(month_start, month_end)).copy(deep=True)
+            ds = ds.persist()
+            ds_tmp.close()
+        # remove encoding issues caused by zarr for netcdf
+        for var in ds:
+            try:
+                del ds[var].encoding['chunks']
+            except:
+                pass
+            try:
+                del ds[var].encoding['_FillValue']
+            except:
+                pass
+            try:
+                del ds[var].attrs['_FillValue']
+            except:
+                pass
         # set netcdf encoding
         comp = dict(zlib=config['nc_write']['zlib'], shuffle=config['nc_write']['shuffle'],\
                 complevel=config['nc_write']['complevel'],_FillValue=None) #config['nc_write']['fillvalue'])
         encoding = {var: comp for var in ds.data_vars}
         # output final netcdf(s)
-        ds.to_netcdf(ncdf_out, mode="w", encoding=encoding, \
+        ds.to_netcdf(ncdf_month_out, mode="w", encoding=encoding, \
                 format=config['nc_write']['format'], \
                 engine=config['nc_write']['engine'])
-    except:
+        # remove persisted data
+        del ds
+    except Exception as error:
+        with open(Path(config['output_dir'] + 'netcdf_output/debug_model_netcdfs.txt'), 'a') as pf:
+            print(error, file=pf)
         pass
+
+def harmonized_netcdf_output(config, agg='daily', by='year'):
+    try:
+        # create file load location
+        zarr_in = config['output_dir'] + 'zarr_output/WrPMIP_Pan-Arctic_models_harmonized.zarr'
+        # open file and slice by year in context manager
+        with xr.open_zarr(zarr_in, chunks='auto', chunked_array_type='dask', use_cftime=True, mask_and_scale=False) as ds_tmp:
+            # if monthly aggregate by month
+            if agg == 'monthly':
+                # for var in ['TotalResp','GPP','NEE']:
+                #     ds[var] = ds[var].resample(time='MS').sum()
+                # for var in ['10cm_SoilTemp','ALT','WTD','SoilC','SoilN','CN']:
+                #     ds[var] = ds[var].resample(time='MS').mean()
+                ds = ds_tmp.resample(time='MS').mean()
+            else:
+                ds = ds_tmp
+        # remove encoding issues caused by zarr for netcdf
+        for var in ds:
+            try:
+                del ds[var].encoding['chunks']
+            except:
+                pass
+            try:
+                del ds[var].encoding['_FillValue']
+            except:
+                pass
+            try:
+                del ds[var].attrs['_FillValue']
+            except:
+                pass
+        ds.persist()
+        if by == 'year':
+            for year in np.arange(2000,2022):
+                # create monthly output file
+                ncdf_out = config['output_dir'] + 'netcdf_output/WrPMIP_Pan-Arctic_harmonized_' + str(year) + '.nc'
+                if agg == 'monthly':
+                    ncdf_out = config['output_dir'] + 'netcdf_output/WrPMIP_Pan-Arctic_harmonized_monthly_means_' + str(year) + '.nc'
+                # yearly subset
+                ds_sub = ds.sel(time=str(year))
+                # output final netcdf(s)
+                ds_sub.to_netcdf(ncdf_out, mode="w", \
+                        format=config['nc_write']['format'], \
+                        engine=config['nc_write']['engine'])
+        elif by == 'model':
+            for mod in ds.model.values:
+                # create monthly output file
+                ncdf_out = config['output_dir'] + 'netcdf_output/WrPMIP_Pan-Arctic_harmonized_' + str(mod) + '.nc'
+                if agg == 'monthly':
+                    ncdf_out = config['output_dir'] + 'netcdf_output/WrPMIP_Pan-Arctic_harmonized_monthly_means_' + str(mod) + '.nc'
+                # yearly subset
+                ds_sub = ds.sel(model=str(mod))
+                # output final netcdf(s)
+                ds_sub.to_netcdf(ncdf_out, mode="w", \
+                        format=config['nc_write']['format'], \
+                        engine=config['nc_write']['engine'])
+    except Exception as error:
+        with open(Path(config['output_dir'] + 'netcdf_output/debug_model_netcdfs.txt'), 'a') as pf:
+            print(error, file=pf)
+        pass
+
+# CAVM geotiff to netcdf conversion
+def cavm_geotiff_to_netcdf():
+    # geotiff CAVM file
+    f = '/projects/warpmip/shared/raster_cavm_v1.tif'
+    # netcdf output
+    f_out = '/projects/warpmip/shared/0.5_cavm.nc' 
+    img_out = '/projects/warpmip/shared/cavm.png'
+    # open geotiff convert from projection to lat/lon
+    geo = rxr.open_rasterio(f, masked=True)
+    geo = geo.rio.reproject("EPSG:4326")
+    with open(Path('/projects/warpmip/shared/debug_cavm.txt'), 'w') as pf:
+        print(geo, file=pf)
+    # convert to xarray dataset
+    geo_ds = geo.to_dataset('band')
+    with open(Path('/projects/warpmip/shared/debug_cavm.txt'), 'a') as pf:
+        print(geo_ds, file=pf)
+    # remove spatial ref, rename var and x/y, sort lat
+    geo_ds = geo_ds.drop_vars('spatial_ref')
+    geo_ds = geo_ds.rename({1: 'cavm', 'x':'lon', 'y':'lat'})
+    geo_ds = geo_ds.sortby('lat')
+    # remove land,water,glacier,etc cells from cavm to only have tundra cells
+    geo_ds = geo_ds.where(geo_ds.cavm < 80, np.nan)
+    geo_ds = geo_ds.where(geo_ds.lat > 55, drop=True)
+    with open(Path('/projects/warpmip/shared/debug_cavm.txt'), 'a') as pf:
+        print(geo_ds, file=pf)
+    # use xesmf to regrid to 0.5 x 0.5 degree grid
+    ds_out = xe.util.grid_global(0.5,0.5)
+    ds_out = ds_out.where(ds_out.lat > 55, drop=True)
+    with open(Path('/projects/warpmip/shared/debug_cavm.txt'), 'a') as pf:
+        print('global grid created', file=pf)
+        print(ds_out, file=pf)
+    regridder = xe.Regridder(geo_ds, ds_out, 'nearest_s2d', periodic=True)
+    with open(Path('/projects/warpmip/shared/debug_cavm.txt'), 'a') as pf:
+        print('regridder created', file=pf)
+    geo_out = regridder(geo_ds['cavm'])
+    geo_out = geo_out.to_dataset(name='cavm')
+    lon = geo_out['lon'][0,:]
+    lat = geo_out['lat'][:,0]
+    with open(Path('/projects/warpmip/shared/debug_cavm.txt'), 'a') as pf:
+        print('saving lat', file=pf)
+        print(lat, file=pf)
+        print('saving lon', file=pf)
+        print(lon, file=pf)
+    geo_out = geo_out.drop_vars(['lat','lon'])
+    geo_out = geo_out.rename_dims({'x':'lon', 'y':'lat'})
+    geo_out = geo_out.assign_coords({'lon': lon.values, 'lat': lat.values})
+    with open(Path('/projects/warpmip/shared/debug_cavm.txt'), 'a') as pf:
+        print('geo_ds regridded', file=pf)
+        print(geo_out, file=pf)
+    #geo_out = geo_out.where(geo_out.cavm == np.nan, 1)
+    # plot cavm data
+    fig = plt.figure(figsize=(8,6))
+    # Set the axes using the specified map projection
+    ax=plt.axes(projection=ccrs.Orthographic(0,90))
+    # Make a mesh plot
+    cs=ax.pcolormesh(geo_out['lon'], geo_out['lat'], geo_out['cavm'], transform = ccrs.PlateCarree(), cmap='viridis')
+    ax.coastlines()
+    #ax.gridlines()
+    cbar = plt.colorbar(cs,shrink=0.7,location='left',label='cavm_groups')
+    ax.yaxis.set_ticks_position('left')
+    #ax.set_extent([-180,180,55,90], crs=ccrs.PlateCarree())
+    add_circle_boundary(ax)
+    #geo_out.cavm.plot.imshow()
+    with open(Path('/projects/warpmip/shared/debug_cavm.txt'), 'a') as pf:
+        print('plotted', file=pf)
+    plt.savefig(img_out, dpi=300)
+    plt.close(fig)
+    with open(Path('/projects/warpmip/shared/debug_cavm.txt'), 'a') as pf:
+        print('saved', file=pf)
+    # output to netcdf file
+    geo_out.to_netcdf(f_out, mode="w", format='NETCDF4_CLASSIC', engine='netcdf4')
+
+def reccap2_plot():
+    # load recap2 netcdf
+    reccap2_filename = '/projects/warpmip/shared/RECCAP2_permafrost_regions_isimip3.nc'
+    reccap2 = xr.open_dataset(reccap2_filename)
+    reccap2 = reccap2.rename({'latitude': 'lat', 'longitude': 'lon'})
+    reccap2 = reccap2['permafrost_region_mask']
+    #reccap2 = reccap2.reindex_like(ds.TotalResp, method='nearest')
+    reccap2 = reccap2.where(reccap2 < 1e35)
+    out_geo = '/scratch/jw2636/processed_outputs/regional/figures/reccap2_mask.png' 
+    # Set figure size
+    fig_reccap = plt.figure(figsize=(8,6))
+    # Set the axes using the specified map projection
+    ax=plt.axes(projection=ccrs.Orthographic(0,90))
+    # Make a mesh plot
+    cs=ax.pcolormesh(reccap2['lon'], reccap2['lat'], reccap2, transform = ccrs.PlateCarree(), cmap='viridis')
+    ax.coastlines()
+    #ax.gridlines()
+    cbar = plt.colorbar(cs,shrink=0.7,location='left',label='reccap2')
+    ax.yaxis.set_ticks_position('left')
+    #ax.set_extent([-180,180,55,90], crs=ccrs.PlateCarree())
+    add_circle_boundary(ax)
+    plt.savefig(out_geo, dpi=300)
+    plt.close(fig_reccap)
+
+def warming_treatment_effect_graphs(input_list):
+    # context manager to not change chunk sizes
+    with dask.config.set(**{'array.slicing.split_large_chunks': False}):
+        # graph type (mean, instantaneous)
+        config = input_list[0]
+        var_list = input_list[1]
+        with open(Path(config['output_dir'] + 'figures/debug_soiltemp_graphs.txt'), 'w') as pf:
+            print('graphing started:', file=pf)
+        # open zarr file
+        zarr_file = config['output_dir'] + 'zarr_output/WrPMIP_Pan-Arctic_models_harmonized.zarr'
+        ds = xr.open_zarr(zarr_file, chunks='auto', chunked_array_type='dask', use_cftime=True, mask_and_scale=True) 
+        # select soil layer
+        with open(Path(config['output_dir'] + 'figures/debug_soiltemp_graphs.txt'), 'a') as pf:
+            print('data loaded:', file=pf)
+            print(ds, file=pf)
+        # select variables of interest
+        ds = ds[var_list]
+        # change to -180/180 coords
+        ds['lon'] =('lon', (((ds.lon.values + 180) % 360) - 180))
+        # use sortby to enforce monotonically increasing dims for xarray
+        ds = ds.sortby(['lon'])
+        # # datarrays for weighted average of top soil layers
+        # coords = dict(SoilDepth=('SoilDepth', [0.01, 0.04, 0.09]))
+        # with open(Path(config['output_dir'] + 'figures/debug_soiltemp_graphs.txt'), 'a') as pf:
+        #     print('coords for weighted mean calculation', file=pf)
+        #     print(coords, file=pf)
+        # weights = xr.DataArray([0.2,0.4,0.4], dims=("SoilDepth",), coords=coords)
+        # with open(Path(config['output_dir'] + 'figures/debug_soiltemp_graphs.txt'), 'a') as pf:
+        #     print('weights for weighted mean calculation', file=pf)
+        #     print(weights, file=pf)
+        # #ds = ds.isel(SoilDepth = 0, drop=True)
+        # ds['10cm_SoilTemp'] = ds['SoilTemp'].isel(SoilDepth = [0,1,2]).weighted(weights).mean(dim='SoilDepth', skipna=True)
+        # with open(Path(config['output_dir'] + 'figures/debug_soiltemp_graphs.txt'), 'a') as pf:
+        #     print('subset selected', file=pf)
+        #     print(ds, file=pf)
+        # calculate summer cum fluxes and summer mean responses for everything else
+        #ds = ds.sel(model=["CLM5","CLM5-ExIce","ELM2-NGEE","UVic-ESCM","ecosys","ELM1-ECA","CLASSIC"])
+        ds = ds.sel(time=slice('2000-01-01','2020-12-31'))
+        var_sub_cum = ['TotalResp','GPP','NEE']
+        ds_summer_cum = ds[var_sub_cum].copy(deep=True)
+        ds_summer_cum = ds_summer_cum.sel(time=is_maes_summer(ds_summer_cum['time.month'])).groupby('time.year').sum(dim=['time'], skipna=True)
+        ds_winter_cum = ds[var_sub_cum].copy(deep=True)
+        ds_winter_cum = ds_winter_cum.sel(time=is_winter(ds_winter_cum['time.month'])).groupby('time.year').sum(dim=['time'], skipna=True)
+        var_sub_mean = ['10cm_SoilTemp','ALT','WTD','SoilC','SoilN','CN']
+        ds_summer_mean = ds[var_sub_mean].copy(deep=True)
+        ds_summer_mean = ds_summer_mean.sel(time=is_maes_summer(ds_summer_mean['time.month'])).groupby('time.year').mean(dim=['time'], skipna=True)
+        ds_winter_mean = ds[var_sub_mean].copy(deep=True)
+        ds_winter_mean = ds_winter_mean.sel(time=is_winter(ds_winter_mean['time.month'])).groupby('time.year').mean(dim=['time'], skipna=True)
+        ds_summer = ds_summer_cum.merge(ds_summer_mean).persist()
+        ds_efd_summer = ds_summer.copy(deep=True)
+        ds_summer_deltas = ds_summer.sel(sim='otc') - ds_summer.sel(sim='b2')
+        with open(Path(config['output_dir'] + 'figures/debug_soiltemp_graphs.txt'), 'a') as pf:
+            print('ds summer delta (otc - b2)', file=pf)
+            print(ds_summer_deltas, file=pf)
+            print('TotalResp from ds_summer_deltas', file=pf)
+            print(ds_summer_deltas['TotalResp'], file=pf)
+            print('TotalResp from ds_summer selected for baseline', file=pf)
+            print(ds_summer['TotalResp'].sel(sim='b2'), file=pf)
+            print('10cm_soiltemp from summer deltas', file=pf)
+            print(ds_summer_deltas['10cm_SoilTemp'], file=pf)
+        ds_efd_summer['TotalResp_efd'] = (ds_summer_deltas['TotalResp'] / ds_summer['TotalResp'].sel(sim='b2')) / ds_summer_deltas['10cm_SoilTemp'] 
+        with open(Path(config['output_dir'] + 'figures/debug_soiltemp_graphs.txt'), 'a') as pf:
+            print('ds effect size normed by soil warming', file=pf)
+            print(ds_efd_summer, file=pf)
+        ds_efd_summer['GPP_efd'] = (ds_summer_deltas['GPP'] / ds_summer['GPP'].sel(sim='b2')) / ds_summer_deltas['10cm_SoilTemp'] 
+        with open(Path(config['output_dir'] + 'figures/debug_soiltemp_graphs.txt'), 'a') as pf:
+            print('ds effect size normed by temp difference', file=pf)
+            print(ds_efd_summer, file=pf)
+        ds_winter = ds_winter_cum.merge(ds_winter_mean).persist()
+        ds_efd_winter = ds_winter.copy(deep=True)
+        ds_winter_deltas = ds_winter.sel(sim='sf') - ds_winter.sel(sim='b2')
+        ds_efd_winter['TotalResp_efd'] = (ds_winter_deltas['TotalResp'] / ds_winter['TotalResp'].sel(sim='b2')) / ds_winter_deltas['10cm_SoilTemp'] 
+        ds_efd_winter['GPP_efd'] = (ds_winter_deltas['GPP'] / ds_winter['GPP'].sel(sim='b2')) / ds_winter_deltas['10cm_SoilTemp'] 
+        with open(Path(config['output_dir'] + 'figures/debug_soiltemp_graphs.txt'), 'a') as pf:
+            print('summer calculation of 10cm soiltemp', file=pf)
+            print(ds_summer, file=pf)
+            print('winter calculation of 10cm soiltemp', file=pf)
+            print(ds_winter, file=pf)
+        ds_summer_geomean = ds_summer.mean(dim=['lat','lon'], skipna=True)
+        ds_summer_geomean_deltas = ds_summer_geomean.sel(sim='otc') - ds_summer_geomean.sel(sim='b2')
+        ds_winter_geomean = ds_winter.mean(dim=['lat','lon'], skipna=True)
+        ds_winter_geomean_deltas = ds_winter_geomean.sel(sim='sf') - ds_winter_geomean.sel(sim='b2')
+        cavm_f = '/projects/warpmip/shared/0.5_cavm.nc' 
+        cavm = xr.open_dataset(cavm_f)
+        ds_summer_geomean_cavm = ds_summer.where(cavm.cavm > 0)
+        ds_summer_geomean_cavm = ds_summer_geomean_cavm.mean(dim=['lat','lon'], skipna=True)
+        ds_summer_geomean_cavm_deltas = ds_summer_geomean_cavm.sel(sim='otc') - ds_summer_geomean_cavm.sel(sim='b2')
+        ds_summer_effectsize = ds_summer_geomean_cavm_deltas.copy(deep=True)
+        ds_summer_effectsize['TotalResp'] = ds_summer_effectsize['TotalResp'] / ds_summer_geomean_cavm['TotalResp'].sel(sim='b2')
+        ds_summer_effectsize['GPP'] = ds_summer_effectsize['GPP'] / ds_summer_geomean_cavm['GPP'].sel(sim='b2')
+        ds_summer_effectsize['NEE'] = ds_summer_effectsize['NEE'] / ds_summer_geomean_cavm['NEE'].sel(sim='b2')
+        ds_winter_geomean_cavm = ds_winter.where(cavm.cavm > 0)
+        ds_winter_geomean_cavm = ds_winter_geomean_cavm.mean(dim=['lat','lon'], skipna=True)
+        ds_winter_geomean_cavm_deltas = ds_winter_geomean_cavm.sel(sim='sf') - ds_winter_geomean_cavm.sel(sim='b2')
+        ds_winter_effectsize = ds_winter_geomean_cavm_deltas.copy(deep=True)
+        ds_winter_effectsize['TotalResp'] = ds_winter_effectsize['TotalResp'] / ds_winter_geomean_cavm['TotalResp'].sel(sim='b2')
+        ds_winter_effectsize['GPP'] = ds_winter_effectsize['GPP'] / ds_winter_geomean_cavm['GPP'].sel(sim='b2')
+        ds_winter_effectsize['NEE'] = ds_winter_effectsize['NEE'] / ds_winter_geomean_cavm['NEE'].sel(sim='b2')
+        # subsample sites
+        # create list for ds after gps selection
+        ds_summer_list = []
+        ds_winter_list = []
+        site_gps = config['site_gps'] 
+        for site in site_gps:
+            # find middle grid center
+            ds_center = ds_summer.sel(lon=site_gps[site]['lon'], lat=site_gps[site]['lat'], method='nearest')
+            ds_summer_sub = ds_summer.sel(lon=slice(ds_center['lon']-2.75, ds_center['lon']+2.75), lat=slice(ds_center['lat']-2.75, ds_center['lat']+2.75)).copy()
+            ds_winter_sub = ds_winter.sel(lon=slice(ds_center['lon']-2.75, ds_center['lon']+2.75), lat=slice(ds_center['lat']-2.75, ds_center['lat']+2.75)).copy()
+            with open(Path(config['output_dir'] + 'figures/debug_soiltemp_graphs.txt'), 'a') as pf:
+                print(ds_center, file=pf)
+                print(ds_summer_sub, file=pf)
+                print(site, file=pf)
+            # calculate summer cum fluxes and summer mean responses for everything else
+            ds_summer_sub = ds_summer_sub.stack(gridcell=['lon','lat'], create_index=False) 
+            ds_summer_sub = ds_summer_sub.drop_vars(['lat','lon']) 
+            ds_summer_sub = ds_summer_sub.assign_coords({'gridcell': np.arange(1,ds_summer_sub.gridcell.size+1)})
+            ds_winter_sub = ds_winter_sub.stack(gridcell=['lon','lat'], create_index=False)
+            ds_winter_sub = ds_winter_sub.drop_vars(['lat','lon']) 
+            ds_winter_sub = ds_winter_sub.assign_coords({'gridcell': np.arange(1,ds_summer_sub.gridcell.size+1)})
+            #ds_summer_sub = ds_summer_sub.mean(dim=['lat','lon'], skipna=True)
+            #ds_winter_sub = ds_winter_sub.mean(dim=['lat','lon'], skipna=True)
+            with open(Path(config['output_dir'] + 'figures/debug_soiltemp_graphs.txt'), 'a') as pf:
+                print('ds_summer_sub:', file=pf)
+                print(ds_summer_sub, file=pf)
+            #ds_sub['site_mean'] = ds_sub.mean(dim=['lon','lat'], skipna=True)
+            #ds_sub['site_std'] = ds_sub.std(dim=['lon','lat'], skipna=True)
+            # expand a dimension to include site and save to list
+            ds_summer_sub = ds_summer_sub.assign_coords({'site': site})
+            ds_summer_sub = ds_summer_sub.expand_dims('site')
+            ds_winter_sub = ds_winter_sub.assign_coords({'site': site})
+            ds_winter_sub = ds_winter_sub.expand_dims('site')
+            #ds_sub = ds_sub.reset_coords(['lat','lon'])
+            #ds_sub['lat'] = ds_sub['lat'].expand_dims('site')
+            #ds_sub['lon'] = ds_sub['lon'].expand_dims('site')
+            with open(Path(config['output_dir'] + 'figures/debug_soiltemp_graphs.txt'), 'a') as pf:
+                print(ds_summer_sub, file=pf)
+            ds_summer_list.append(ds_summer_sub)
+            ds_winter_list.append(ds_winter_sub)
+        with open(Path(config['output_dir'] + 'figures/debug_soiltemp_graphs.txt'), 'a') as pf:
+            print('datasets appended', file=pf)
+        # combine site dimension to have multiple sites
+        ds_summer_sites = xr.combine_by_coords(ds_summer_list)
+        ds_winter_sites = xr.combine_by_coords(ds_winter_list)
+        # calculate the temp differences for otc - ctrl
+        ds_summer_sites = ds_summer_sites.where(ds_summer_sites.TotalResp > 8)
+        ds_summer_site_grids = ds_summer_sites.copy(deep=True)
+        ds_summer_site_deltas = ds_summer_sites.sel(sim='otc') - ds_summer_sites.sel(sim='b2')
+        ds_summer_site_deltas = ds_summer_site_deltas.where(ds_summer_site_deltas['10cm_SoilTemp'] > 0.05)
+        df_sum_site_delta = ds_summer_site_deltas['TotalResp'].to_dataframe()
+        df_sum_site_delta.to_csv(Path(config['output_dir'] + 'figures/summer_site_er_delta.csv'))
+        df_baseline_er = ds_summer_sites['TotalResp'].sel(sim='b2').to_dataframe()
+        df_baseline_er.to_csv(Path(config['output_dir'] + 'figures/summer_site_er_baseline.csv'))
+        df_sum_temp_delta = ds_summer_site_deltas['10cm_SoilTemp'].to_dataframe()
+        df_sum_temp_delta.to_csv(Path(config['output_dir'] + 'figures/summer_site_temp_delta.csv'))
+        with open(Path(config['output_dir'] + 'figures/debug_soiltemp_graphs.txt'), 'a') as pf:
+            print('site summer deltas', file=pf)
+            print(ds_summer_site_deltas, file=pf)
+            print('site summer deltas: TotalResp', file=pf)
+            print(ds_summer_site_deltas['TotalResp'], file=pf)
+            print('site summer TotalResp selected for baseline', file=pf)
+            print(ds_summer_sites['TotalResp'].sel(sim='b2'), file=pf)
+        ds_site_efd_summer = ds_summer_site_deltas['TotalResp'] / ds_summer_sites['TotalResp'].sel(sim='b2') * 100
+        with open(Path(config['output_dir'] + 'figures/debug_soiltemp_graphs.txt'), 'a') as pf:
+            print('site summer efd', file=pf)
+            print(ds_site_efd_summer, file=pf)
+        ds_site_efd_summer = ds_site_efd_summer / ds_summer_site_deltas['10cm_SoilTemp']
+        with open(Path(config['output_dir'] + 'figures/debug_soiltemp_graphs.txt'), 'a') as pf:
+            print('ds sites summer effect size normalized by soil warming', file=pf)
+            print(ds_site_efd_summer, file=pf)
+        # output to csv to check numbers
+        ds_summer_site_mean = ds_summer_sites.mean(dim='site', skipna=True)
+        ds_summer_site_mean_deltas = ds_summer_site_mean.sel(sim='otc') - ds_summer_site_mean.sel(sim='b2')
+        ds_winter_site_deltas = ds_winter_sites.sel(sim='sf') - ds_winter_sites.sel(sim='b2')
+        ds_site_efd_winter = ds_winter_site_deltas['TotalResp'] / ds_winter_sites['TotalResp'].sel(sim='b2') * 100
+        ds_site_efd_winter = ds_site_efd_winter / ds_winter_site_deltas['10cm_SoilTemp']
+        ds_winter_site_mean = ds_winter_sites.mean(dim='site', skipna=True)
+        ds_winter_site_mean_deltas = ds_winter_site_mean.sel(sim='sf') - ds_winter_site_mean.sel(sim='b2')
+        with open(Path(config['output_dir'] + 'figures/debug_soiltemp_graphs.txt'), 'a') as pf:
+            print('summer deltas', file=pf)
+            print(ds_summer_site_deltas, file=pf)
+        # fix grids for previous plots
+        ds_summer_sites = ds_summer_sites.mean(dim='gridcell')
+        ds_summer_site_mean = ds_summer_site_mean.mean(dim='gridcell')
+        ds_summer_site_deltas = ds_summer_site_deltas.mean(dim='gridcell')
+        ds_summer_site_mean_deltas = ds_summer_site_mean_deltas.mean(dim='gridcell')
+        ds_winter_sites = ds_winter_sites.mean(dim='gridcell')
+        ds_winter_site_mean = ds_winter_site_mean.mean(dim='gridcell')
+        ds_winter_site_deltas = ds_winter_site_deltas.mean(dim='gridcell')
+        ds_winter_site_mean_deltas = ds_winter_site_mean_deltas.mean(dim='gridcell')
+        #### Summer ##########################
+        # graph delta 10cm soil temp by site/model through time
+        cb_pal = ["#000000","#004949","#009292","#ff6db6","#ffb6db","#490092","#006ddb","#b66dff","#6db6ff","#b6dbff","#920000","#924900","#db6d00","#24ff24","#ffff6d"]
+        matplotlib.rcParams['axes.prop_cycle'] = matplotlib.cycler(color=cb_pal)
+        y_lab = 'Delta Mean Summer 10cm Soil Temperature (°C)' 
+        x_lab = 'Year'
+        cmap_WhRd = matplotlib.colors.LinearSegmentedColormap.from_list('custom_RdBu', ['#FFFFFF','#F5A886','#CF5246','#AB162A','#7f0000'], N=256)
+        fig_effectsize = plt.figure(figsize=(8,6))
+        ds_summer_site_deltas['10cm_SoilTemp'].plot(x='year', col='model', col_wrap=3, hue='site')
+        #plt.title('Mean Summer Warming', fontsize=20)
+        #plt.xlabel(x_lab, fontsize=16)
+        #plt.ylabel(y_lab, fontsize=16)
+        plt.savefig(Path(config['output_dir'] + 'figures/10cm_SoilTemp_OTC_warming_effect_by_site_through_time.png'), dpi=300)
+        plt.close(fig_effectsize)
+        def modify_legend(axes, **kwargs):
+            oldleg = axes.get_legend()
+            props = dict(
+                handles=oldleg.legend_handles,
+                labels=[t.get_text() for t in oldleg.texts],
+                title=oldleg.get_title().get_text()
+            )
+            props.update(kwargs) # kwargs takes precedence over props
+            axes.legend(**props)
+            return 
+        # ER - summer
+        fig_effectsize = plt.figure(figsize=(8,6))
+        er_tmp = ds_summer_effectsize['TotalResp'] * 100
+        er_model_mean = er_tmp.mean(dim='model', skipna=True)
+        er_tmp.plot(x='year', hue='model')# col='model', col_wrap=3, hue='site')
+        plt.plot(er_tmp.year, er_model_mean, linestyle='--', color='black', label='ensemble')
+        plt.title('', fontsize=20)
+        y_lab = 'Summer ER Effectsize (%)' 
+        x_lab = 'Year' 
+        plt.xlabel(x_lab, fontsize=16)
+        plt.ylabel(y_lab, fontsize=16)
+        plt.ylim((-20, 175))
+        plt.xticks(np.arange(2000,2022,5))
+        plt.savefig(Path(config['output_dir'] + 'figures/ER_OTC_effectsize_by_model.png'), dpi=300)
+        plt.close(fig_effectsize)
+        # ER - winter
+        fig_effectsize = plt.figure(figsize=(8,6))
+        er_tmp = ds_winter_effectsize['TotalResp'] * 100
+        er_model_mean = er_tmp.mean(dim='model', skipna=True)
+        er_tmp.plot(x='year', hue='model')# col='model', col_wrap=3, hue='site')
+        plt.plot(er_tmp.year, er_model_mean, linestyle='--', color='black', label='ensemble')
+        plt.title('', fontsize=20)
+        y_lab = 'Winter ER Effectsize (%)' 
+        x_lab = 'Year' 
+        plt.xlabel(x_lab, fontsize=16)
+        plt.ylabel(y_lab, fontsize=16)
+        plt.ylim((-20, 175))
+        plt.xticks(np.arange(2000,2022,5))
+        plt.savefig(Path(config['output_dir'] + 'figures/ER_SF_effectsize_by_model.png'), dpi=300)
+        plt.close(fig_effectsize)
+        # GPP - summer
+        fig_effectsize = plt.figure(figsize=(8,6))
+        gpp_tmp = ds_summer_effectsize['GPP'] * 100
+        gpp_model_mean = gpp_tmp.mean(dim='model', skipna=True)
+        gpp_tmp.plot(x='year', hue='model')# col='model', col_wrap=3, hue='site')
+        plt.plot(gpp_tmp.year, gpp_model_mean, linestyle='--', color='black', label='ensemble')
+        plt.title('', fontsize=20)
+        y_lab = 'Summer GPP Effectsize (%)' 
+        x_lab = 'Year' 
+        plt.xlabel(x_lab, fontsize=16)
+        plt.ylabel(y_lab, fontsize=16)
+        plt.ylim((-20, 175))
+        plt.xticks(np.arange(2000,2022,5))
+        plt.savefig(Path(config['output_dir'] + 'figures/GPP_OTC_effectsize_by_model.png'), dpi=300)
+        plt.close(fig_effectsize)
+        # GPP - winter
+        fig_effectsize = plt.figure(figsize=(8,6))
+        gpp_tmp = ds_winter_effectsize['GPP'] * 100
+        gpp_model_mean = gpp_tmp.mean(dim='model', skipna=True)
+        gpp_tmp.plot(x='year', hue='model')# col='model', col_wrap=3, hue='site')
+        plt.plot(gpp_tmp.year, gpp_model_mean, linestyle='--', color='black', label='ensemble')
+        plt.title('', fontsize=20)
+        y_lab = 'Winter GPP Effectsize (%)' 
+        x_lab = 'Year' 
+        plt.xlabel(x_lab, fontsize=16)
+        plt.ylabel(y_lab, fontsize=16)
+        plt.ylim((-20, 175))
+        plt.xticks(np.arange(2000,2022,5))
+        plt.savefig(Path(config['output_dir'] + 'figures/GPP_SF_effectsize_by_model.png'), dpi=300)
+        plt.close(fig_effectsize)
+        # graph site mean delta 10cm soil temp by model
+        #matplotlib.rcParams['axes.prop_cycle'] = matplotlib.cycler(color=cb_pal)
+        y_lab = 'Delta Mean Summer 10cm Soil Temperature (°C)' 
+        x_lab = 'Year' 
+        fig_effectsize = plt.figure(figsize=(8,6))
+        ds_summer_site_mean_deltas['10cm_SoilTemp'].plot(x='year', hue='model')
+        #plt.title('Tundra Sites Mean Summer Warming', fontsize=20)
+        plt.xlabel(x_lab, fontsize=16)
+        plt.ylabel(y_lab, fontsize=16)
+        plt.ylim((-1, 4))
+        plt.savefig(Path(config['output_dir'] + 'figures/10cm_SoilTemp_OTC_warming_effect_by_sitemeans_through_time.png'), dpi=300)
+        plt.close(fig_effectsize)
+        # graph cavm mean delta 10cm soil temp by model
+        #matplotlib.rcParams['axes.prop_cycle'] = matplotlib.cycler(color=cb_pal)
+        fig_effectsize = plt.figure(figsize=(8,6))
+        ds_summer_geomean_cavm_deltas['10cm_SoilTemp'].plot(x='year', hue='model')
+        #plt.title('CAVM Mean Summer Warming', fontsize=20)
+        plt.xlabel(x_lab, fontsize=16)
+        plt.ylabel(y_lab, fontsize=16)
+        plt.ylim((-1, 4))
+        plt.savefig(Path(config['output_dir'] + 'figures/10cm_SoilTemp_OTC_warming_effect_by_cavm_means_through_time.png'), dpi=300)
+        plt.close(fig_effectsize)
+        # graph total simulation delta
+        fig_effectsize = plt.figure(figsize=(8,6))
+        ds_summer_geomean_deltas['10cm_SoilTemp'].plot(x='year', hue='model')
+        #plt.title('55N Regional Mean Summer Warming', fontsize=20)
+        plt.xlabel(x_lab, fontsize=16)
+        plt.ylabel(y_lab, fontsize=16)
+        plt.ylim((-1, 4))
+        plt.savefig(Path(config['output_dir'] + 'figures/10cm_SoilTemp_OTC_warming_effect_55N_through_time.png'), dpi=300)
+        plt.close(fig_effectsize)
+        # graph ER effect by soil delta increase
+        fig_effectsize = plt.figure(figsize=(8,6))
+        er_tmp = ds_summer_effectsize.copy(deep=True)
+        er_tmp['TotalResp'] = er_tmp['TotalResp'] * 100
+        er_tmp.plot.scatter(x='10cm_SoilTemp', y='TotalResp', hue='model')
+        plt.title('', fontsize=20)
+        #plt.title('CAVM Delta ER by Delta OTC warming', fontsize=20)
+        plt.xlabel('Delta Mean Summer 10cm Soil Temperature (°C)', fontsize=16)
+        plt.ylabel('Summer ER Effectsize (%)', fontsize=16)
+        #plt.axline((0,0), slope=1, linestyle='--', c='black', zorder=-100)
+        plt.savefig(Path(config['output_dir'] + 'figures/OTC_Delta-delta_ER_by_soiltemp.png'), dpi=300)
+        plt.close(fig_effectsize)
+        # graph the gridded responses
+        fig_effectsize = plt.figure(figsize=(10,10))
+        p = ds_summer_deltas['10cm_SoilTemp'].sel(year=2010).plot(col='model', col_wrap=3, robust=True, transform=ccrs.PlateCarree(), \
+                subplot_kws={'projection': ccrs.Orthographic(0,90)}, cbar_kwargs={'label': 'Delta Summer Soil Temperature (°C)'}, \
+                cmap='RdBu_r')
+        for ax in p.axs.flat:
+            ax.coastlines()
+            ax.set_extent([-180,180,55,90], crs=ccrs.PlateCarree())
+            add_circle_boundary(ax)
+        plt.subplots_adjust(wspace=0.1, right=0.8)
+        #plt.axline((0,0), slope=1, linestyle='--', c='black', zorder=-100)
+        plt.savefig(Path(config['output_dir'] + 'figures/OTC_55N_year2010_10cm_soiltemp_by_model.png'), dpi=300)
+        plt.close(fig_effectsize)
+        # graph the gridded responses
+        fig_effectsize = plt.figure(figsize=(10,10))
+        p = ds_efd_summer['TotalResp_efd'].sel(year=2010).plot(col='model', col_wrap=3, robust=True, transform=ccrs.PlateCarree(), \
+                subplot_kws={'projection': ccrs.Orthographic(0,90)}, cbar_kwargs={'label': 'ER Effect Size Delta(%/°C)'}, \
+                cmap='RdBu_r')
+        for ax in p.axs.flat:
+            ax.coastlines()
+            ax.set_extent([-180,180,55,90], crs=ccrs.PlateCarree())
+            add_circle_boundary(ax)
+        plt.subplots_adjust(wspace=0.1, right=0.8)
+        #plt.axline((0,0), slope=1, linestyle='--', c='black', zorder=-100)
+        plt.savefig(Path(config['output_dir'] + 'figures/OTC_55N_year2010_ER_effect_size_delta_by_model.png'), dpi=300)
+        plt.close(fig_effectsize)
+        #### winter ##########################
+        # graph delta 10cm soil temp by site/model through time
+        cb_pal = ["#000000","#004949","#009292","#ff6db6","#ffb6db","#490092","#006ddb","#b66dff","#6db6ff","#b6dbff","#920000","#924900","#db6d00","#24ff24","#ffff6d"]
+        matplotlib.rcParams['axes.prop_cycle'] = matplotlib.cycler(color=cb_pal)
+        y_lab = 'Delta Mean Winter 10cm Soil Temperature (°C)' 
+        x_lab = 'Year' 
+        fig_effectsize = plt.figure(figsize=(8,6))
+        ds_winter_site_deltas['10cm_SoilTemp'].plot(x='year', col='model', col_wrap=3, hue='site')
+        #plt.title('Mean Winter Warming', fontsize=20)
+        #plt.xlabel(x_lab, fontsize=16)
+        #plt.ylabel(y_lab, fontsize=16)
+        plt.savefig(Path(config['output_dir'] + 'figures/10cm_SoilTemp_SF_warming_effect_by_site_through_time.png'), dpi=300)
+        plt.close(fig_effectsize)
+        # graph site mean delta 10cm soil temp by model
+        #matplotlib.rcParams['axes.prop_cycle'] = matplotlib.cycler(color=cb_pal)
+        fig_effectsize = plt.figure(figsize=(8,6))
+        ds_winter_site_mean_deltas['10cm_SoilTemp'].plot(x='year', hue='model')
+        #plt.title('Tundra Sites Mean Winter Warming', fontsize=20)
+        plt.xlabel(x_lab, fontsize=16)
+        plt.ylabel(y_lab, fontsize=16)
+        plt.ylim((-1, 4))
+        plt.savefig(Path(config['output_dir'] + 'figures/10cm_SoilTemp_SF_warming_effect_by_sitemeans_through_time.png'), dpi=300)
+        plt.close(fig_effectsize)
+        # graph cavm mean delta 10cm soil temp by model
+        #matplotlib.rcParams['axes.prop_cycle'] = matplotlib.cycler(color=cb_pal)
+        fig_effectsize = plt.figure(figsize=(8,6))
+        ds_winter_geomean_cavm_deltas['10cm_SoilTemp'].plot(x='year', hue='model')
+        #plt.title('CAVM Mean Winter Warming', fontsize=20)
+        plt.xlabel(x_lab, fontsize=16)
+        plt.ylabel(y_lab, fontsize=16)
+        plt.ylim((-1, 4))
+        plt.savefig(Path(config['output_dir'] + 'figures/10cm_SoilTemp_SF_warming_effect_by_cavm_means_through_time.png'), dpi=300)
+        plt.close(fig_effectsize)
+        # graph total simulation delta
+        fig_effectsize = plt.figure(figsize=(8,6))
+        ds_winter_geomean_deltas['10cm_SoilTemp'].plot(x='year', hue='model')
+        #plt.title('55N Regional Mean Winter Warming', fontsize=20)
+        plt.xlabel(x_lab, fontsize=16)
+        plt.ylabel(y_lab, fontsize=16)
+        plt.ylim((-1, 4))
+        plt.savefig(Path(config['output_dir'] + 'figures/10cm_SoilTemp_SF_warming_effect_55N_through_time.png'), dpi=300)
+        plt.close(fig_effectsize)
+        # graph ER effect by soil delta increase
+        fig_effectsize = plt.figure(figsize=(8,6))
+        er_tmp = ds_winter_effectsize.copy(deep=True)
+        er_tmp['TotalResp'] = er_tmp['TotalResp'] * 100
+        er_tmp.plot.scatter(x='10cm_SoilTemp', y='TotalResp', hue='model')
+        plt.title('', fontsize=20)
+        #plt.title('CAVM Delta ER by Delta SF warming', fontsize=20)
+        plt.xlabel('Delta Mean Winter 10cm Soil Temperature (°C)', fontsize=16)
+        plt.ylabel('Winter ER Effectsize (%)', fontsize=16)
+        #plt.axline((0,0), slope=1, linestyle='--', c='black', zorder=-100)
+        plt.savefig(Path(config['output_dir'] + 'figures/SF_Delta-delta_ER_by_soiltemp.png'), dpi=300)
+        plt.close(fig_effectsize)
+        # graph the gridded responses
+        fig_effectsize = plt.figure(figsize=(10,8))
+        p = ds_winter_deltas['10cm_SoilTemp'].sel(year=2010).plot(col='model', col_wrap=3, robust=True, transform=ccrs.PlateCarree(), \
+                subplot_kws={'projection': ccrs.Orthographic(0,90)}, cbar_kwargs={'label': 'Delta Winter Soil Temperature (°C)'}, \
+                cmap=cmap_WhRd, vmin=0, vmax=7)
+        for ax in p.axs.flat:
+            ax.coastlines()
+            ax.set_extent([-180,180,55,90], crs=ccrs.PlateCarree())
+            add_circle_boundary(ax)
+        plt.subplots_adjust(wspace=0.1, right=0.8)
+        #plt.axline((0,0), slope=1, linestyle='--', c='black', zorder=-100)
+        plt.savefig(Path(config['output_dir'] + 'figures/SF_55N_year2010_10cm_soiltemp_by_model.png'), dpi=300)
+        plt.close(fig_effectsize)
+        # effectsize delta
+        fig_effectsize = plt.figure(figsize=(10,10))
+        p = ds_efd_winter['TotalResp_efd'].sel(year=2010).plot(col='model', col_wrap=3, robust=True, transform=ccrs.PlateCarree(), \
+                subplot_kws={'projection': ccrs.Orthographic(0,90)}, cbar_kwargs={'label': 'ER Effect Size Delta(%/°C)'}, \
+                cmap='RdBu_r')
+        for ax in p.axs.flat:
+            ax.coastlines()
+            ax.set_extent([-180,180,55,90], crs=ccrs.PlateCarree())
+            add_circle_boundary(ax)
+        plt.subplots_adjust(wspace=0.1, right=0.8)
+        #plt.axline((0,0), slope=1, linestyle='--', c='black', zorder=-100)
+        plt.savefig(Path(config['output_dir'] + 'figures/SF_55N_year2010_ER_effect_size_delta_by_model.png'), dpi=300)
+        plt.close(fig_effectsize)
+
+        # #######
+        # ## effect size normed by temp delta
+        # #######
+        fig_effectsize = plt.figure(figsize=(8,6))
+        ds_site_efd_summer.mean(dim=['gridcell','site']).plot(x='year', hue='model')
+        ds_site_efd_summer.mean(dim=['gridcell','site','model']).plot(x='year', color='black', linestyle='--', label='Ensemble')
+        plt.title('Site-based Normalized Effect Size', fontsize=20)
+        plt.xticks(np.arange(2000,2022,5))
+        plt.xlabel('Year', fontsize=16)
+        plt.ylabel('Normalized Effect Size (%/°C)', fontsize=16)
+        plt.savefig(Path(config['output_dir'] + 'figures/Sites_eft_by_model.png'), dpi=300)
+        plt.close(fig_effectsize)
+        
+        fig_effectsize = plt.figure(figsize=(8,6))
+        ds_site_efd_summer.mean(dim='gridcell').plot(x='year', col='model', col_wrap=3, hue='site')
+        #plt.title('Mean Winter Warming', fontsize=20)
+        #plt.xlabel(x_lab, fontsize=16)
+        plt.ylim((-60, 60))
+        #plt.ylabel(y_lab, fontsize=16)
+        plt.savefig(Path(config['output_dir'] + 'figures/Sites_eft_by_model_2.png'), dpi=300)
+        plt.close(fig_effectsize)
+
+        ds_sites_ef_numerator = ds_summer_site_grids['TotalResp'].sel(sim='otc') - ds_summer_site_grids['TotalResp'].sel(sim='b2')
+        ds_sites_ef_denominator = ds_summer_site_grids['TotalResp'].sel(sim='b2', drop=True)
+        ds_sites_c = ds_summer_site_grids['SoilC'].sel(sim='b2', drop=True)
+        ds_sites_n = ds_summer_site_grids['SoilN'].sel(sim='b2', drop=True)
+        ds_sites_cn = ds_summer_site_grids['CN'].sel(sim='b2', drop=True)
+        
+        ds_sites_efd_numerator = (ds_sites_ef_numerator / ds_sites_ef_denominator) * 100
+        ds_sites_efd_denominator =  ds_summer_site_grids['10cm_SoilTemp'].sel(sim='otc') - ds_summer_site_grids['10cm_SoilTemp'].sel(sim='b2')
+        ds_sites_efd_denominator = ds_sites_efd_denominator.where(ds_sites_efd_denominator > 0.05)
+        ds_sites_efd_final = ds_sites_efd_numerator / ds_sites_efd_denominator 
+        
+        ds_out = ds_sites_efd_final.to_dataset(name='efd')
+        ds_out['SoilC'] = ds_sites_c
+        ds_out['SoilN'] = ds_sites_n
+        ds_out['CN'] = ds_sites_cn
+        ds_out.to_netcdf(Path(config['output_dir'] + 'figures/ds_grids.nc'), mode="w", format='NETCDF4_CLASSIC', engine='netcdf4')
+        
+        #for mod in ds_site_efd_summer['model'].values:
+            ##### test 1 loops with xarray plot
+            # fig_ef, axs = plt.subplots(nrows=4,ncols=4)
+            # for ax, site in zip(axs.ravel(), ds_sites_efd_final.site.values):
+            #     ds_sites_efd_final.sel(model=mod, site=site).plot(ax=ax, x='year', hue='gridcell')
+            #     ax.get_legend().set_visible(False)
+            #     ax.set_title(site, fontsize=20)
+            #     ax.set_xlabel('', fontsize=16)
+            #     ax.set_ylim((-60, 60))
+            # plt.tight_layout()
+            ##### test 2 seaborn
+            # efd_df = ds_sites_efd_final.sel(model=mod).to_dataframe(name='efd')
+            # efd_df = efd_df.reset_index()
+            # with open(Path(config['output_dir'] + 'figures/debug_soiltemp_graphs.txt'), 'a') as pf:
+            #     print('efd to dataframe', file=pf)
+            #     print(efd_df, file=pf)
+            # efd_df.to_csv(Path(config['output_dir'] + 'figures/efd_to_dataframe.csv'))
+            # g = sns.FacetGrid(data=efd_df, col='site', col_wrap=4, hue='gridcell')
+            # g.map_dataframe(sns.lineplot, 'year', 'efd')
+            ###### xarray plots 
+            # fig_effectsize = plt.figure(figsize=(8,6))
+            # ds_sites_efd_final.sel(model=mod).plot(x='year', col='site', col_wrap=4, hue='gridcell')
+            # plt.ylim((-60, 60))
+            # plt.savefig(Path(config['output_dir'] + 'figures/site_efd_eval_' + str(mod) + '.png'), dpi=300)
+            # plt.close(g.fig)
+            # 
+            # fig_effectsize = plt.figure(figsize=(8,6))
+            # ds_sites_ef_numerator.sel(model=mod).plot(x='year', col='site', col_wrap=4, hue='gridcell')
+            # #plt.title('Mean Winter Warming', fontsize=20)
+            # #plt.xlabel(x_lab, fontsize=16)
+            # plt.ylim((-100, 400))
+            # #plt.ylabel(y_lab, fontsize=16)
+            # plt.savefig(Path(config['output_dir'] + 'figures/site_delta_flux_eval_' + str(mod) + '.png'), dpi=300)
+            # plt.close(fig_effectsize)
+            # 
+            # fig_effectsize = plt.figure(figsize=(8,6))
+            # ds_sites_ef_denominator.sel(model=mod).plot(x='year', col='site', col_wrap=4, hue='gridcell')
+            # #plt.title('Mean Winter Warming', fontsize=20)
+            # #plt.xlabel(x_lab, fontsize=16)
+            # plt.ylim((-100, 400))
+            # #plt.ylabel(y_lab, fontsize=16)
+            # plt.savefig(Path(config['output_dir'] + 'figures/site_baseline_flux_eval_' + str(mod) + '.png'), dpi=300)
+            # plt.close(fig_effectsize)
+        
+            # fig_effectsize = plt.figure(figsize=(8,6))
+            # ds_sites_efd_numerator.sel(model=mod).plot(x='year', col='site', col_wrap=4, hue='gridcell')
+            # #plt.title('Mean Winter Warming', fontsize=20)
+            # #plt.xlabel(x_lab, fontsize=16)
+            # plt.ylim((-100, 400))
+            # #plt.ylabel(y_lab, fontsize=16)
+            # plt.savefig(Path(config['output_dir'] + 'figures/site_ef_eval_' + str(mod) + '.png'), dpi=300)
+            # plt.close(fig_effectsize)
+            # 
+            # fig_effectsize = plt.figure(figsize=(8,6))
+            # ds_sites_efd_denominator.sel(model=mod).plot(x='year', col='site', col_wrap=4, hue='gridcell')
+            # #plt.title('Mean Winter Warming', fontsize=20)
+            # #plt.xlabel(x_lab, fontsize=16)
+            # plt.ylim((-100, 400))
+            # #plt.ylabel(y_lab, fontsize=16)
+            # plt.savefig(Path(config['output_dir'] + 'figures/site_delta_temp_eval_' + str(mod) + '.png'), dpi=300)
+            # plt.close(fig_effectsize)
+            ##### gridspec / subplotspec
+            # fig = plt.figure(figsize=(10, 8))
+            # outer = matplotlib.gridspec.GridSpec(4, 4, wspace=0.1, hspace=0.1)
+            # sites = iter(ds_sites_efd_final.site.values)
+            # for i in range(16):
+            #     inner = matplotlib.gridspec.GridSpecFromSubplotSpec(1, 2, subplot_spec=outer[i], wspace=0.05, hspace=0.1)
+            #     for j in range(2):
+            #         ax = plt.Subplot(fig, inner[j])
+            #         t = ax.text(0.5,0.5, 'outer=%d, inner=%d' % (i, j))
+            #         t.set_ha('center')
+            #         ax.set_xticks([])
+            #         ax.set_yticks([])
+            #         fig.add_subplot(ax)
+            # plt.savefig(Path(config['output_dir'] + 'figures/site_efd_grid_' + str(mod) + '.png'), dpi=300)
+            # plt.close(fig_effectsize)
+
+        # #######
+        # ## effectsize normalzed by delta soil temp
+        # #######
+        # ds_summer = ds_summer.mean(dim=['lat','lon'], skipna=True)
+        # ds_winter = ds_winter.mean(dim=['lat','lon'], skipna=True)
+        # # ER - summer
+        # fig_effectsize = plt.figure(figsize=(8,6))
+        # er_tmp = ds_efd_summer['TotalResp_efd']
+        # er_model_mean = er_tmp.mean(dim='model', skipna=True)
+        # er_tmp.plot(x='year', hue='model')# col='model', col_wrap=3, hue='site')
+        # plt.plot(er_tmp.year, er_model_mean, linestyle='--', color='black', label='ensemble')
+        # plt.title('', fontsize=20)
+        # y_lab = 'Summer ER Effectsize Delta (%/°C)' 
+        # x_lab = 'Year' 
+        # plt.xlabel(x_lab, fontsize=16)
+        # plt.ylabel(y_lab, fontsize=16)
+        # #plt.ylim((-20, 100))
+        # plt.savefig(Path(config['output_dir'] + 'figures/ER_OTC_effectsizei_delta_by_model.png'), dpi=300)
+        # plt.close(fig_effectsize)
+        # # ER - winter
+        # fig_effectsize = plt.figure(figsize=(8,6))
+        # er_tmp = ds_efd_winter['TotalResp_efd']
+        # er_model_mean = er_tmp.mean(dim='model', skipna=True)
+        # er_tmp.plot(x='year', hue='model')# col='model', col_wrap=3, hue='site')
+        # plt.plot(er_tmp.year, er_model_mean, linestyle='--', color='black', label='ensemble')
+        # plt.title('', fontsize=20)
+        # y_lab = 'Winter ER Effectsize Delta (%/°C)' 
+        # x_lab = 'Year' 
+        # plt.xlabel(x_lab, fontsize=16)
+        # plt.ylabel(y_lab, fontsize=16)
+        # #plt.ylim((-20, 100))
+        # plt.savefig(Path(config['output_dir'] + 'figures/ER_SF_effectsize_delta_by_model.png'), dpi=300)
+        # plt.close(fig_effectsize)
+        # # GPP - summer
+        # fig_effectsize = plt.figure(figsize=(8,6))
+        # gpp_tmp = ds_efd_summer['GPP_efd']
+        # gpp_model_mean = gpp_tmp.mean(dim='model', skipna=True)
+        # gpp_tmp.plot(x='year', hue='model')# col='model', col_wrap=3, hue='site')
+        # plt.plot(gpp_tmp.year, gpp_model_mean, linestyle='--', color='black', label='ensemble')
+        # plt.title('', fontsize=20)
+        # y_lab = 'Summer GPP Effectsize Delta (%/°C)' 
+        # x_lab = 'Year' 
+        # plt.xlabel(x_lab, fontsize=16)
+        # plt.ylabel(y_lab, fontsize=16)
+        # #plt.ylim((-20, 100))
+        # plt.savefig(Path(config['output_dir'] + 'figures/GPP_OTC_effectsize_delta_by_model.png'), dpi=300)
+        # plt.close(fig_effectsize)
+        # # GPP - winter
+        # fig_effectsize = plt.figure(figsize=(8,6))
+        # gpp_tmp = ds_efd_winter['GPP_efd']
+        # gpp_model_mean = gpp_tmp.mean(dim='model', skipna=True)
+        # gpp_tmp.plot(x='year', hue='model')# col='model', col_wrap=3, hue='site')
+        # plt.plot(gpp_tmp.year, gpp_model_mean, linestyle='--', color='black', label='ensemble')
+        # plt.title('', fontsize=20)
+        # y_lab = 'Winter GPP Effectsize Delta (%/°C)' 
+        # x_lab = 'Year' 
+        # plt.xlabel(x_lab, fontsize=16)
+        # plt.ylabel(y_lab, fontsize=16)
+        # #plt.ylim((-20, 100))
+        # plt.savefig(Path(config['output_dir'] + 'figures/GPP_SF_effectsize_delta_by_model.png'), dpi=300)
+        # plt.close(fig_effectsize)
+
+# Maes graphs
+def maes_graphs(input_list):
+    # context manager to not change chunk sizes
+    with dask.config.set(**{'array.slicing.split_large_chunks': False}):
+        # graph type (mean, instantaneous)
+        config = input_list[0]
+        var_list = input_list[1]
+        with open(Path(config['output_dir'] + 'figures/debug_maes_graphs.txt'), 'w') as pf:
+            print('graphing started:', file=pf)
+        # open zarr file
+        zarr_file = config['output_dir'] + 'zarr_output/WrPMIP_Pan-Arctic_models_harmonized.zarr'
+        ds = xr.open_zarr(zarr_file, chunks='auto', chunked_array_type='dask', use_cftime=True, mask_and_scale=False) 
+        # select soil layer
+        with open(Path(config['output_dir'] + 'figures/debug_maes_graphs.txt'), 'a') as pf:
+            print('data loaded:', file=pf)
+            print(ds, file=pf)
+        # select variables of interest
+        ds = ds[var_list]
+        # change to -180/180 coords
+        ds['lon'] =('lon', (((ds.lon.values + 180) % 360) - 180))
+        # use sortby to enforce monotonically increasing dims for xarray
+        ds = ds.sortby(['lon'])
+        # select surface soil temp
+        #ds = ds.isel(SoilDepth = 0, drop=True)
+        with open(Path(config['output_dir'] + 'figures/debug_maes_graphs.txt'), 'a') as pf:
+            print('subset selected', file=pf)
+            print(ds, file=pf)
+        # subsample sites
+        # create list for ds after gps selection
+        ds_list = []
+        site_gps = config['site_gps'] 
+        for site in site_gps:
+            # find middle grid center
+            ds_center = ds.sel(lon=site_gps[site]['lon'], lat=site_gps[site]['lat'], method='nearest')
+            ds_sub = ds.sel(lon=slice(ds_center['lon']-0.75, ds_center['lon']+0.75), lat=slice(ds_center['lat']-0.75, ds_center['lat']+0.75)).copy()
+            with open(Path(config['output_dir'] + 'figures/debug_maes_graphs.txt'), 'a') as pf:
+                print(ds_center, file=pf)
+                print(ds_sub, file=pf)
+                print(site, file=pf)
+            ds_sub['site_mean'] = ds_sub.mean(dim=['lon','lat'], skipna=True)
+            ds_sub['site_std'] = ds_sub.std(dim=['lon','lat'], skipna=True)
+            # expand a dimension to include site and save to list
+            ds_sub = ds_sub.assign_coords({'site': site})
+            ds_sub = ds_sub.expand_dims('site')
+            #ds_sub = ds_sub.reset_coords(['lat','lon'])
+            #ds_sub['lat'] = ds_sub['lat'].expand_dims('site')
+            #ds_sub['lon'] = ds_sub['lon'].expand_dims('site')
+            with open(Path(config['output_dir'] + 'figures/debug_maes_graphs.txt'), 'a') as pf:
+                print(ds_sub, file=pf)
+            ds_list.append(ds_sub)
+        with open(Path(config['output_dir'] + 'figures/debug_maes_graphs.txt'), 'a') as pf:
+            print('datasets appended', file=pf)
+        # combine site dimension to have multiple sites
+        ds_sites = xr.combine_by_coords(ds_list)
+        with open(Path(config['output_dir'] + 'figures/debug_maes_graphs.txt'), 'a') as pf:
+            print('datasets combined', file=pf)
+        # # select by CAVM
+        # cavm_f = '/projects/warpmip/shared/0.5_cavm.nc' 
+        # cavm = xr.open_dataset(cavm_f)
+        # ds = ds.where(cavm.cavm > 0).persist()
+        # with open(Path(config['output_dir'] + 'figures/debug_maes_graphs.txt'), 'a') as pf:
+        #     print('cavm grids selected', file=pf)
+        #     print(ds, file=pf)
+        # # summer average
+        # ds = ds.sel(model=["CLM5","CLM5-ExIce","ELM2-NGEE","UVic-ESCM","ecosys","ELM1-ECA","CLASSIC"])
+        # ds = ds.sel(time=slice('2000-01-01','2020-12-31'))
+        # ds_annual_summer_cum_geoavg = ds.sel(time=is_summer(ds['time.month'])).groupby('time.year').sum(dim=['time'], skipna=True).mean(dim=['lat','lon'], skipna=True)
+        # ds_annual_summer_mean_geoavg = ds.sel(time=is_summer(ds['time.month'])).groupby('time.year').mean(dim=['time','lat','lon'], skipna=True)
+        ds_sites = ds_sites.sel(model=["CLM5","CLM5-ExIce","ELM2-NGEE","UVic-ESCM","ecosys","ELM1-ECA","CLASSIC"])
+        ds_sites = ds_sites.sel(time=slice('2000-01-01','2020-12-31'))
+        var_sub_cum = ['TotalResp','GPP','NEE']
+        ds_annual_summer_cum_sites = ds_sites[var_sub_cum].sel(time=is_maes_summer(ds_sites['time.month'])).groupby('time.year').sum(dim=['time'], skipna=True)
+        var_sub_mean = ['SoilTemp','ALT','WTD','SoilC','SoilN','CN']
+        ds_annual_summer_mean_sites = ds_sites[var_sub_mean].sel(time=is_maes_summer(ds_sites['time.month'])).groupby('time.year').mean(dim=['time'], skipna=True)
+        ds_summer_merged = ds_annual_summer_cum_sites.merge(ds_annual_summer_mean_sites)
+        with open(Path(config['output_dir'] + 'figures/debug_maes_graphs.txt'), 'a') as pf:
+            # print('subset to geospatial average of annual summer cumulative fluxes of tundra cells', file=pf)
+            # print(ds_annual_summer_cum_geoavg, file=pf)
+            # print('create summer mean nitrogen values through time', file=pf)
+            # print(ds_annual_summer_mean_geoavg, file=pf)
+            print('sites through time summer cumulative flux', file=pf)
+            print(ds_annual_summer_cum_sites, file=pf)
+            print('sites through time summer means for other variables', file=pf)
+            print(ds_annual_summer_mean_sites, file=pf)
+            print('merged cum and means for summer by year', file=pf)
+            print(ds_summer_merged, file=pf)
+        # # warm - control / control
+        # ds_diff = (ds_annual_summer_cum_geoavg.sel(sim='otc', drop=True) - ds_annual_summer_cum_geoavg.sel(sim='b2', drop=True)) / ds_annual_summer_cum_geoavg.sel(sim='b2', drop=True)
+        # with open(Path(config['output_dir'] + 'figures/debug_maes_graphs.txt'), 'a') as pf:
+        #     print('warmed - control / control', file=pf)
+        #     print(ds_diff, file=pf)
+        # # pooled standard deviation, time
+        # model_stdevs = ds_annual_summer_cum_geoavg['TotalResp'].sel(sim=['b2','otc']).std(dim=['sim','year'], skipna=True)
+        # model_stdevs_sqrd = model_stdevs * model_stdevs
+        # pooled_variance = model_stdevs_sqrd.sum(dim='model') / model_stdevs_sqrd.count(dim='model')
+        # pooled_stdev = np.sqrt(pooled_variance.values)
+        # with open(Path(config['output_dir'] + 'figures/debug_maes_graphs.txt'), 'a') as pf:
+        #     print('model stdevs', file=pf)
+        #     print(model_stdevs.values, file=pf)
+        #     print('model stdevs squared', file=pf)
+        #     print(model_stdevs_sqrd.values, file=pf)
+        #     print('pooled model variance avg', file=pf)
+        #     print(pooled_variance.values, file=pf)
+        #     print('pooled stdev after sqrt', file=pf)
+        #     print(pooled_stdev, file=pf)
+        warmed_stdevs_sites = ds_summer_merged.sel(sim='otc', drop=True).std(dim=['year'], skipna=True)
+        contrl_stdevs_sites = ds_summer_merged.sel(sim='b2', drop=True).std(dim=['year'], skipna=True)
+        with open(Path(config['output_dir'] + 'figures/debug_maes_graphs.txt'), 'a') as pf:
+            print('warmed/control stdevs per model', file=pf)
+            print(warmed_stdevs_sites, file=pf)
+            print(contrl_stdevs_sites, file=pf)
+        warmed_stdevs_sqrd_sites = warmed_stdevs_sites * warmed_stdevs_sites
+        contrl_stdevs_sqrd_sites = contrl_stdevs_sites * contrl_stdevs_sites
+        with open(Path(config['output_dir'] + 'figures/debug_maes_graphs.txt'), 'a') as pf:
+            print('warmed/control stdevs per model squared', file=pf)
+            print(warmed_stdevs_sqrd_sites, file=pf)
+            print(contrl_stdevs_sqrd_sites, file=pf)
+        avg_sqrd_stdev_sites = (warmed_stdevs_sqrd_sites + contrl_stdevs_sqrd_sites) / 2
+        with open(Path(config['output_dir'] + 'figures/debug_maes_graphs.txt'), 'a') as pf:
+            print('average warmed+control pooled stdev per model', file=pf)
+            print(avg_sqrd_stdev_sites, file=pf)
+        pooled_stdev_sites = np.sqrt(avg_sqrd_stdev_sites)
+        with open(Path(config['output_dir'] + 'figures/debug_maes_graphs.txt'), 'a') as pf:
+            print('pooled warmed+control stdev per model after sqrt', file=pf)
+            print(pooled_stdev_sites, file=pf)
+        # # Hedge's SMD 
+        # ds_hsmd = (ds_annual_summer_cum_geoavg.sel(sim='otc', drop=True) - ds_annual_summer_cum_geoavg.sel(sim='b2', drop=True)) / pooled_stdev
+        ds_hsmd_sites = (ds_summer_merged.sel(sim='otc', drop=True) - ds_summer_merged.sel(sim='b2', drop=True)) / pooled_stdev_sites
+        with open(Path(config['output_dir'] + 'figures/debug_maes_graphs.txt'), 'a') as pf:
+            # print('Hedges SMD', file=pf)
+            # print(ds_hsmd, file=pf)
+            print('Hedges SMD sites', file=pf)
+            print(ds_hsmd_sites, file=pf)
+        ##### site plot of Hedges SMD by model
+        # plot totalresp through time
+        cb_pal = ["#000000","#004949","#009292","#ff6db6","#ffb6db","#490092","#006ddb","#b66dff","#6db6ff","#b6dbff","#920000","#924900","#db6d00","#24ff24","#ffff6d"]
+        matplotlib.rcParams['axes.prop_cycle'] = matplotlib.cycler(color=cb_pal)
+        fig_effectsize = plt.figure(figsize=(8,6))
+        ds_hsmd_sites['TotalResp'].plot(x='year', col='model', col_wrap=3, hue='site')
+        plt.savefig(Path(config['output_dir'] + 'figures/ER_HSMD_sites_through_time_by_model.png'), dpi=300)
+        plt.close(fig_effectsize)
+        # ##### effect site plot
+        # # plot totalresp through time
+        # fig_effectsize = plt.figure(figsize=(8,6))
+        # #ds_sub_time = pd.to_datetime([f'{a:04}-07-01' for a in ds_diff['year'].values])
+        # ds_sub_time = np.arange(0,len(ds_diff['year'].values))
+        # cb_pal = ["#000000","#004949","#009292","#ff6db6","#ffb6db","#490092","#006ddb","#b66dff","#6db6ff","#b6dbff","#920000","#924900","#db6d00","#24ff24","#ffff6d"]
+        # color_iter = iter(cb_pal)
+        # ax = plt.gca()
+        # y_lab = 'ER effect size (%)' 
+        # for mod in ds_diff['model'].values:
+        #     ds_sub_mod_var = ds_diff['TotalResp'].sel(model=mod).values * 100
+        #     #ds_sub_mod_sd = ds_stdev.sel(model=mod).values
+        #     with open(Path(config['output_dir'] + 'figures/debug_maes_graphs.txt'), 'a') as pf:
+        #         print('time values from arange', file=pf)
+        #         print(ds_sub_time, file=pf)
+        #         print('ER values', file=pf)
+        #         print(ds_sub_mod_var, file=pf)
+        #     line_color = next(color_iter)
+        #     idx = np.isfinite(ds_sub_time) & np.isfinite(ds_sub_mod_var)
+        #     b, m = polyfit(ds_sub_time[idx], ds_sub_mod_var[idx], 1)
+        #     with open(Path(config['output_dir'] + 'figures/debug_maes_graphs.txt'), 'a') as pf:
+        #         print('fit slope', file=pf)
+        #         print(m, file=pf)
+        #         print('fit intercept', file=pf)
+        #         print(b, file=pf)
+        #     ds_fit = np.array(b + m * ds_sub_time)
+        #     with open(Path(config['output_dir'] + 'figures/debug_maes_graphs.txt'), 'a') as pf:
+        #         print('fit values', file=pf)
+        #         print(ds_fit, file=pf)
+        #     plt.scatter(ds_sub_time, ds_sub_mod_var, label=mod, c=line_color)
+        #     plt.plot(ds_sub_time, ds_fit, '-', c=line_color)
+        # #plt.plot(mod_time, mod_var, linestyle='--', color='black', label='ensemble')
+        # plt.xlabel('Year', fontsize=16)
+        # plt.axvspan(4.5, 9.5, facecolor='lightskyblue', alpha=0.2, zorder=-100) 
+        # plt.axvspan(14.5, 22, facecolor='lightskyblue', alpha=0.2, zorder=-100) 
+        # #y_lab = 'Delta ' + str(var) + ' (' + units + ')' 
+        # ax.set_xlim([-0.5,20.5])
+        # y_lab = 'ER effect size (%)' 
+        # plt.ylabel(y_lab, fontsize=16) 
+        # plt.legend() 
+        # #plt.ylim((-0.5, 1.0))
+        # plt.savefig(Path(config['output_dir'] + 'figures/Maes_fig_3b_effectsize.png'), dpi=300)
+        # plt.close(fig_effectsize)
+        # with open(Path(config['output_dir'] + 'figures/debug_maes_graphs.txt'), 'a') as pf:
+        #     print('effect size graph output', file=pf)
+        # ##### hedges SMD plot
+        # # plot totalresp through time
+        # fig_hsmd = plt.figure(figsize=(8,6))
+        # #ds_sub_time = pd.to_datetime([f'{a:04}-07-01' for a in ds_diff['year'].values])
+        # ax = plt.gca()
+        # color_iter = iter(cb_pal)
+        # for mod in ds_hsmd['model'].values:
+        #     ds_sub_mod_var = ds_hsmd['TotalResp'].sel(model=mod).values
+        #     #ds_sub_mod_sd = ds_stdev.sel(model=mod).values
+        #     with open(Path(config['output_dir'] + 'figures/debug_maes_graphs.txt'), 'a') as pf:
+        #         print('time values from arange', file=pf)
+        #         print(ds_sub_time, file=pf)
+        #         print('ER values', file=pf)
+        #         print(ds_sub_mod_var, file=pf)
+        #     line_color = next(color_iter)
+        #     plt.scatter(ds_sub_time, ds_sub_mod_var, label=mod, c=line_color)
+        #     ds_sub_time_age1 = ds_sub_time[5:10]
+        #     ds_sub_time_age2 = ds_sub_time[10:15]
+        #     ds_sub_mod_var_age1 = ds_sub_mod_var[5:10]
+        #     ds_sub_mod_var_age2 = ds_sub_mod_var[10:15]
+        #     idx1 = np.isfinite(ds_sub_time_age1) & np.isfinite(ds_sub_mod_var_age1)
+        #     idx2 = np.isfinite(ds_sub_time_age2) & np.isfinite(ds_sub_mod_var_age2)
+        #     b1, m1 = polyfit(ds_sub_time_age1[idx1], ds_sub_mod_var_age1[idx1], 1)
+        #     b2, m2 = polyfit(ds_sub_time_age2[idx2], ds_sub_mod_var_age2[idx2], 1)
+        #     with open(Path(config['output_dir'] + 'figures/debug_maes_graphs.txt'), 'a') as pf:
+        #         print('fit slope', file=pf)
+        #         print(m1, file=pf)
+        #         print('fit intercept', file=pf)
+        #         print(b1, file=pf)
+        #     ds_fit1 = np.array(b1 + m1 * ds_sub_time_age1)
+        #     ds_fit2 = np.array(b2 + m2 * ds_sub_time_age2)
+        #     with open(Path(config['output_dir'] + 'figures/debug_maes_graphs.txt'), 'a') as pf:
+        #         print('fit values', file=pf)
+        #         print(ds_fit1, file=pf)
+        #     plt.plot(ds_sub_time_age1, ds_fit1, '-', c=line_color)
+        #     plt.plot(ds_sub_time_age2, ds_fit2, '-', c=line_color)
+        # #plt.plot(mod_time, mod_var, linestyle='--', color='black', label='ensemble')
+        # plt.xlabel('Year', fontsize=16)
+        # plt.axvspan(4.5, 9.5, facecolor='lightskyblue', alpha=0.2, zorder=-100) 
+        # plt.axvspan(14.5, 22, facecolor='lightskyblue', alpha=0.2, zorder=-100) 
+        # x_vals = np.arange(5,10,1)
+        # y_vals = 1.35 + (-0.13 * x_vals)
+        # plt.plot(x_vals, y_vals, '--', c='black')
+        # x_vals = np.arange(10,15,1)
+        # y_vals = -1.45 + (0.15 * x_vals)
+        # plt.plot(x_vals, y_vals, '--', c='black', label='Observed')
+        # ax.set_xlim([-0.5,20.5])
+        # #y_lab = 'Delta ' + str(var) + ' (' + units + ')' 
+        # y_lab = 'ER Hedges SMD' 
+        # plt.ylabel(y_lab, fontsize=16) 
+        # plt.legend() 
+        # #plt.ylim((-0.5, 1.0))
+        # plt.savefig(Path(config['output_dir'] + 'figures/Maes_fig_3b_hsmd.png'), dpi=300)
+        # plt.close(fig_hsmd)
+        # with open(Path(config['output_dir'] + 'figures/debug_maes_graphs.txt'), 'a') as pf:
+        #     print('Hedges SMD graph output', file=pf)
+        # ##### ER Hedges SMD by N%
+        # # plot totalresp through time
+        # fig_effectsize = plt.figure(figsize=(8,6))
+        # #ds_sub_time = pd.to_datetime([f'{a:04}-07-01' for a in ds_diff['year'].values])
+        # color_iter = iter(cb_pal)
+        # ax = plt.gca()
+        # for mod in ["ELM2-NGEE","ELM1-ECA","CLASSIC"]:
+        #     ds_sub_time = ds_annual_summer_mean_geoavg['SoilN'].sel(model=mod, sim='b2').values * (1/(1.35*100000))
+        #     ds_sub_mod_var = ds_hsmd['TotalResp'].sel(model=mod).values
+        #     #ds_sub_mod_sd = ds_stdev.sel(model=mod).values
+        #     with open(Path(config['output_dir'] + 'figures/debug_maes_graphs.txt'), 'a') as pf:
+        #         print('time values from arange', file=pf)
+        #         print(ds_sub_time, file=pf)
+        #         print('ER values', file=pf)
+        #         print(ds_sub_mod_var, file=pf)
+        #     line_color = next(color_iter)
+        #     idx = np.isfinite(ds_sub_time) & np.isfinite(ds_sub_mod_var)
+        #     b, m = polyfit(ds_sub_time[idx], ds_sub_mod_var[idx], 1)
+        #     with open(Path(config['output_dir'] + 'figures/debug_maes_graphs.txt'), 'a') as pf:
+        #         print('fit slope', file=pf)
+        #         print(m, file=pf)
+        #         print('fit intercept', file=pf)
+        #         print(b, file=pf)
+        #     ds_fit = np.array(b + m * ds_sub_time)
+        #     with open(Path(config['output_dir'] + 'figures/debug_maes_graphs.txt'), 'a') as pf:
+        #         print('fit values', file=pf)
+        #         print(ds_fit, file=pf)
+        #     plt.scatter(ds_sub_time, ds_sub_mod_var, label=mod, c=line_color)
+        #     plt.plot(ds_sub_time, ds_fit, '-', c=line_color)
+        # #plt.plot(mod_time, mod_var, linestyle='--', color='black', label='ensemble')
+        # plt.xlabel('TN control (%)', fontsize=16)
+        # x_vals = np.arange(0,1,0.1)
+        # y_vals_c = 0.75 + (-0.6 * x_vals)
+        # plt.plot(x_vals, y_vals_c, '--', c='black', label='Observed')
+        # y_vals_b = 0.5 + (-0.6 * x_vals)
+        # plt.plot(x_vals, y_vals_b, '--', c='blue', label='95CI')
+        # y_vals_t = 1.0 + (-0.6 * x_vals)
+        # plt.plot(x_vals, y_vals_t, '--', c='blue')
+        # #plt.fill_between(x_vals, y_vals_c + y_vals_t, y_vals_c - y_vals_b,  facecolor='lightskyblue', alpha=0.2, zorder=-100)
+        # #y_lab = 'Delta ' + str(var) + ' (' + units + ')' 
+        # #ax.set_xlim([0,22])
+        # y_lab = 'ER Hedges SMD (%)' 
+        # plt.ylabel(y_lab, fontsize=16) 
+        # plt.legend() 
+        # #plt.ylim((-0.5, 1.0))
+        # plt.savefig(Path(config['output_dir'] + 'figures/Maes_fig_5a.png'), dpi=300)
+        # plt.close(fig_effectsize)
+        # with open(Path(config['output_dir'] + 'figures/debug_maes_graphs.txt'), 'a') as pf:
+        #     print('N effect graphed', file=pf)
+        # ##### ER Hedges SMD by CN ratio
+        # # plot totalresp through time
+        # fig_effectsize = plt.figure(figsize=(8,6))
+        # #ds_sub_time = pd.to_datetime([f'{a:04}-07-01' for a in ds_diff['year'].values])
+        # color_iter = iter(cb_pal)
+        # ax = plt.gca()
+        # for mod in ["ELM2-NGEE","ELM1-ECA","CLASSIC"]:
+        #     ds_sub_time = ds_annual_summer_mean_geoavg['CN'].sel(model=mod, sim='b2').values
+        #     ds_sub_mod_var = ds_hsmd['TotalResp'].sel(model=mod).values
+        #     #ds_sub_mod_sd = ds_stdev.sel(model=mod).values
+        #     with open(Path(config['output_dir'] + 'figures/debug_maes_graphs.txt'), 'a') as pf:
+        #         print('time values from arange', file=pf)
+        #         print(ds_sub_time, file=pf)
+        #         print('ER values', file=pf)
+        #         print(ds_sub_mod_var, file=pf)
+        #     line_color = next(color_iter)
+        #     idx = np.isfinite(ds_sub_time) & np.isfinite(ds_sub_mod_var)
+        #     b, m = polyfit(ds_sub_time[idx], ds_sub_mod_var[idx], 1)
+        #     with open(Path(config['output_dir'] + 'figures/debug_maes_graphs.txt'), 'a') as pf:
+        #         print('fit slope', file=pf)
+        #         print(m, file=pf)
+        #         print('fit intercept', file=pf)
+        #         print(b, file=pf)
+        #     ds_fit = np.array(b + m * ds_sub_time)
+        #     with open(Path(config['output_dir'] + 'figures/debug_maes_graphs.txt'), 'a') as pf:
+        #         print('fit values', file=pf)
+        #         print(ds_fit, file=pf)
+        #     plt.scatter(ds_sub_time, ds_sub_mod_var, label=mod, c=line_color)
+        #     plt.plot(ds_sub_time, ds_fit, '-', c=line_color)
+        # #plt.plot(mod_time, mod_var, linestyle='--', color='black', label='ensemble')
+        # plt.xlabel('CN control (unitless)', fontsize=16)
+        # x_vals = np.arange(0,30,1)
+        # y_vals_c = 0.15 + (0.03 * x_vals)
+        # plt.plot(x_vals, y_vals_c, '--', c='black', label='Observed')
+        # y_vals_b = -0.25 + (0.03 * x_vals)
+        # plt.plot(x_vals, y_vals_b, '--', c='blue', label='95CI')
+        # y_vals_t = 0.6 + (0.03 * x_vals)
+        # plt.plot(x_vals, y_vals_t, '--', c='blue')
+        # #plt.fill_between(x_vals, y_vals_c + y_vals_t, y_vals_c - y_vals_b, facecolor='lightskyblue', alpha=0.2, zorder=-100)
+        # #y_lab = 'Delta ' + str(var) + ' (' + units + ')' 
+        # #ax.set_xlim([0,22])
+        # y_lab = 'ER Hedges SMD (%)' 
+        # plt.ylabel(y_lab, fontsize=16) 
+        # plt.legend() 
+        # #plt.ylim((-0.5, 1.0))
+        # plt.savefig(Path(config['output_dir'] + 'figures/Maes_fig_5b.png'), dpi=300)
+        # plt.close(fig_effectsize)
+        # with open(Path(config['output_dir'] + 'figures/debug_maes_graphs.txt'), 'a') as pf:
+        #     print('CN effect graphed', file=pf)
 
 # regional graphing
 def regional_model_graphs(input_list):
-    # graph type (mean, instantaneous)
-    graph_type = input_list[0]
-    # variable of interest
-    var = input_list[1]
-    # soil level
-    soil = input_list[2]
-    # open zarr file
-    zarr_file = '/projects/warpmip/shared/processed_outputs/regional/zarr_output/WrPMIP_Pan-Arctic_models_harmonized.zarr'
-    ds = xr.open_zarr(zarr_file, chunks='auto', chunked_array_type='dask', use_cftime=True, mask_and_scale=False) 
-    # select soil layer
-    with open(Path('/projects/warpmip/shared/processed_outputs/regional/figures/debug_cartopy.txt'), 'a') as pf:
-        print('data loaded', file=pf)
-        print(ds, file=pf)
-    # change to -180/180 coords
-    ds['lon'] =('lon', (((ds.lon.values + 180) % 360) - 180))
-    # sortby for plot
-    ds = ds.sortby(['lon'])
-    # select seasons
-    def is_summer(month):
-        return (month >= 5) & (month <= 9)
-    def is_winter(month):
-        return (month >= 10) | (month <= 4 )
-    ds_annual = ds.isel(SoilDepth=soil).mean(dim=['time','model'], skipna=True)
-    ds_summer = ds.isel(SoilDepth=soil).sel(time=is_summer(ds['time.month'])).mean(dim=['time','model'], skipna=True)
-    ds_winter = ds.isel(SoilDepth=soil).sel(time=is_winter(ds['time.month'])).mean(dim=['time','model'], skipna=True)
-    with open(Path('/projects/warpmip/shared/processed_outputs/regional/figures/debug_cartopy.txt'), 'a') as pf:
-        print('soil subset with sel', file=pf)
-        print(ds, file=pf)
-        print(ds_annual, file=pf)
-        print(ds_summer, file=pf)
-        print(ds_winter, file=pf)
-    # check on max/min values of var after averages
-    var_min = min(ds_annual[var].min().values, ds_summer[var].min().values, ds_winter[var].min().values)
-    var_max = max(ds_annual[var].max().values, ds_summer[var].max().values, ds_winter[var].max().values)
-    # make graph circular
-    def add_circle_boundary(ax):
-        # Compute a circle in axes coordinates, which we can use as a boundary
-        # for the map. We can pan/zoom as much as we like - the boundary will be
-        # permanently circular.
-        theta = np.linspace(0, 2*np.pi, 100)
-        center, radius = [0.5, 0.5], 0.5
-        verts = np.vstack([np.sin(theta), np.cos(theta)]).T
-        circle = mpath.Path(verts * radius + center)
-        ax.set_boundary(circle, transform=ax.transAxes)
-    for sim in ds_annual['sim'].values:
-        for season in [[ds_annual,'annual'], [ds_summer,'summer'], [ds_winter,'winter']]:
+    # context manager to not change chunk sizes
+    with dask.config.set(**{'array.slicing.split_large_chunks': False}):
+        # graph type (mean, instantaneous)
+        config = input_list[0]
+        var_list = input_list[1]
+        soil = 0
+        with open(Path(config['output_dir'] + 'figures/debug_cartopy.txt'), 'w') as pf:
+            print('graphing started:', file=pf)
+        # open zarr file
+        zarr_file = config['output_dir'] + 'zarr_output/WrPMIP_Pan-Arctic_models_harmonized.zarr'
+        ds = xr.open_zarr(zarr_file, chunks='auto', chunked_array_type='dask', use_cftime=True, mask_and_scale=False) 
+        # select soil layer
+        with open(Path(config['output_dir'] + 'figures/debug_cartopy.txt'), 'a') as pf:
+            print('data loaded:', file=pf)
+            print(ds, file=pf)
+        # change to -180/180 coords
+        ds['lon'] =('lon', (((ds.lon.values + 180) % 360) - 180))
+        # use sortby to enforce monotonically increasing dims for xarray
+        ds = ds.sortby(['lon'])
+        # SoilDepth collapsed to comparable dimensions by selecting top layer,
+        ds = ds.isel(SoilDepth = soil, drop=True)
+        with open(Path(config['output_dir'] + 'figures/debug_cartopy.txt'), 'a') as pf:
+            print('soil depth isel:', file=pf)
+            print(ds, file=pf)
+        # mask by RECCAP2 permafrost extent
+        # # load recap2 netcdf
+        # reccap2_filename = '/projects/warpmip/shared/RECCAP2_permafrost_regions_isimip3.nc'
+        # reccap2 = xr.open_dataset(reccap2_filename)
+        # reccap2 = reccap2.rename({'latitude': 'lat', 'longitude': 'lon'})
+        # reccap2 = reccap2['permafrost_region_mask']
+        # reccap2 = reccap2.reindex_like(ds.TotalResp, method='nearest')
+        # reccap2 = reccap2.where(reccap2 < 1e35)
+        # with open(Path(config['output_dir'] + 'figures/debug_cartopy.txt'), 'a') as pf:
+        #     print(reccap2, file=pf)
+        # out_geo = config['output_dir'] + 'figures/reccap2_mask.png' 
+        # # Set figure size
+        # fig_reccap = plt.figure(figsize=(8,6))
+        # # Set the axes using the specified map projection
+        # ax=plt.axes(projection=ccrs.Orthographic(0,90))
+        # # Make a mesh plot
+        # cs=ax.pcolormesh(reccap2['lon'], reccap2['lat'], reccap2, transform = ccrs.PlateCarree(), cmap='viridis')
+        # ax.coastlines()
+        # #ax.gridlines()
+        # cbar = plt.colorbar(cs,shrink=0.7,location='left',label='reccap2')
+        # ax.yaxis.set_ticks_position('left')
+        # #ax.set_extent([-180,180,55,90], crs=ccrs.PlateCarree())
+        # add_circle_boundary(ax)
+        # plt.savefig(out_geo, dpi=300)
+        # plt.close(fig_reccap)
+        # cavm
+        cavm_f = '/projects/warpmip/shared/0.5_cavm.nc' 
+        cavm = xr.open_dataset(cavm_f)
+        ds = ds.where(cavm.cavm > 0).persist()
+        ##########
+        # nee
+        #ds = ds.where(ds.lat > 75, np.nan).persist()
+        ##########
+        # all daily response then averaged across all models and times,
+        # thus geospatially explicit 20-year ensemble means/stdevs: 
+        avg_type = ['time','model']
+        ds_geo_means = ds.mean(dim=avg_type, skipna=True).persist()
+        ds_geo_stdev = ds.std(dim=avg_type, skipna=True).persist()
+        with open(Path(config['output_dir'] + 'figures/debug_cartopy.txt'), 'a') as pf:
+            print('geo means', file=pf)
+        # all summer (may-sept) daily responses then averaged across all models and times, 
+        # thus geospatially explicit 20-year summer ensemble means/stdevs:
+        ds_geo_summer_means = ds.sel(time=is_summer(ds['time.month'])).mean(dim=avg_type, skipna=True).persist()
+        ds_geo_summer_stdev = ds.sel(time=is_summer(ds['time.month'])).std(dim=avg_type, skipna=True).persist()
+        # all winter (oct-april) daily responses then averaged across all models and times, 
+        # thus geospatially explicit 20-year winter ensemble means/stdevs:
+        ds_geo_winter_means = ds.sel(time=is_winter(ds['time.month'])).mean(dim=avg_type, skipna=True).persist()
+        ds_geo_winter_stdev = ds.sel(time=is_winter(ds['time.month'])).std(dim=avg_type, skipna=True).persist()
+        with open(Path(config['output_dir'] + 'figures/debug_cartopy.txt'), 'a') as pf:
+            print('summer/winter means', file=pf)
+        # all daily response then averaged across all models,lats,lons within monthly groups,
+        # thus Pan-Arctic 20-year monthly ensemble mean/stdev:
+        avg_type = ['time','model','lat','lon']
+        ds_geo_month_mod_mean = ds.groupby('time.month').mean(dim=avg_type, skipna=True).persist()
+        ds_geo_month_mod_stdev = ds.groupby('time.month').std(dim=avg_type, skipna=True).persist()
+        # all daily response then averaged across all models,lats,lons within monthly groups,
+        # thus Pan-Arctic monthly model mean/stdev:
+        avg_type = ['time','lat','lon']
+        ds_geo_month_means = ds.groupby('time.month').mean(dim=avg_type, skipna=True).persist()
+        ds_geo_month_stdev = ds.groupby('time.month').std(dim=avg_type, skipna=True).persist()
+        with open(Path(config['output_dir'] + 'figures/debug_cartopy.txt'), 'a') as pf:
+            print('monthly geo means', file=pf)
+        # all daily response then averaged across all lats,lons,
+        # thus Pan-Arctic mean/stdev for each model through time
+        avg_type = ['lat','lon']
+        ds_time_means = ds.mean(dim=avg_type, skipna=True).persist()
+        ds_time_stdev = ds.std(dim=avg_type, skipna=True).persist()
+        # all daily response then averaged across all models,lats,lons,
+        # thus Pan-Arctic ensemble mean/stdev through time
+        avg_type = ['model','lat','lon']
+        ds_time_mod_mean = ds.mean(dim=avg_type, skipna=True).persist()
+        ds_time_mod_stdev = ds.std(dim=avg_type, skipna=True).persist()
+        with open(Path(config['output_dir'] + 'figures/debug_cartopy.txt'), 'a') as pf:
+            print('done with means before time shift', file=pf)
+        ##########  
+        # create difference arrays
+        ds_otc_diff = ds.sel(sim='otc', drop=True) - ds.sel(sim='b2', drop=True)
+        ds_otc_diff2 = ds_otc_diff.copy(deep=True)
+        ds_otc_diff3 = ds_otc_diff.copy(deep=True)
+        ds_otc_effect_size = ds_otc_diff / ds.sel(sim='b2', drop=True)
+        ds_otc_effect_size.persist()
+        ds_otc_effect_size_temp = ds_otc_effect_size / ds_otc_diff['SoilTemp']
+        ds_otc_effect_size_temp.persist()
+        ds_sf_diff = ds.sel(sim='sf', drop=True) - ds.sel(sim='b2', drop=True)
+        ds_sf_diff2 = ds_sf_diff.copy(deep=True)
+        ds_sf_diff3 = ds_sf_diff.copy(deep=True)
+        ds_sf_effect_size = ds_sf_diff / ds.sel(sim='b2', drop=True)
+        ds_sf_effect_size.persist()
+        ds_sf_effect_size_temp = ds_sf_effect_size / ds_sf_diff['SoilTemp']
+        ds_sf_effect_size_temp.persist()
+        ds_sf_otc_diff = ds.sel(sim='sf') - ds.sel(sim='otc')
+        ds_sf_otc_diff2 = ds_sf_otc_diff.copy(deep=True)
+        # calculate model averages for effect size calculation
+        ds_mod_means_b2 = ds.sel(sim='b2', drop=True).groupby('model').mean(dim=['time','model','lat','lon'], skipna=True)
+        with open(Path(config['output_dir'] + 'figures/debug_cartopy.txt'), 'a') as pf:
+            print('mod means for normalization', file=pf)
+            print(ds_mod_means_b2, file=pf)
+            print(ds_mod_means_b2['TotalResp'].values, file=pf)
+            print('effect size dataset', file=pf)
+            print(ds_otc_effect_size, file=pf)
+            print(ds_sf_effect_size, file=pf)
+        # create pandas multiindex
+        idx_month = ds['time.month'].values
+        idx_season = idx_month.copy()
+        idx_peak = idx_month.copy()
+        idx_season[(idx_season < 5) | (idx_season > 9)] = 2
+        idx_peak[(idx_peak < 5) | (idx_peak > 9)] = 2
+        idx_season[(idx_season >= 5) & (idx_season <= 9)] = 1
+        idx_peak[(idx_peak < 5) | (idx_peak > 9)] = 2
+        idx_peak[(idx_peak >= 5) & (idx_peak <= 9)] = 1
+        idx_year = ds['time.year'].values
+        idx_year_shift = shift5(idx_year, 4, fill_value=1999)
+        year_month_season_idx = pd.MultiIndex.from_arrays([idx_year_shift, idx_month, idx_season], names=['year','month','season'])
+        year_season_idx = pd.MultiIndex.from_arrays([idx_year_shift, idx_season], names=['year','season'])
+        year_peak_idx = pd.MultiIndex.from_arrays([idx_year_shift, idx_peak], names=['year','peak'])
+        year_month_idx = pd.MultiIndex.from_arrays([idx_year_shift, idx_month], names=['year','month'])
+        with open(Path(config['output_dir'] + 'figures/debug_cartopy.txt'), 'a') as pf:
+            print('pandas multindex creation:', file=pf)
+            print(year_season_idx, file=pf)
+            print(year_peak_idx, file=pf)
+            print(year_month_idx, file=pf)
+        ds2 = ds.copy(deep=True)
+        ds2.coords['year_month'] = ('time', year_month_idx)
+        ds.coords['year_season'] = ('time', year_season_idx)
+        ds_otc_effect_size.coords['year_month'] = ('time', year_month_idx)
+        ds_sf_effect_size.coords['year_month'] = ('time', year_month_idx)
+        #ds.coords['season'] = idx_season
+        with open(Path(config['output_dir'] + 'figures/debug_cartopy.txt'), 'a') as pf:
+            print('assign year_month to time coordinate:', file=pf)
+            print(ds, file=pf)
+        # group by month within yea
+        ds_geo_otc_month_ef = ds_otc_effect_size.groupby('year_month').mean(dim=['time'], skipna=True).persist()
+        with open(Path(config['output_dir'] + 'figures/debug_cartopy.txt'), 'a') as pf:
+            print('otc effect size geospatial timeseries:', file=pf)
+            print(ds_geo_otc_month_ef, file=pf)
+        #ds_otc_month_ef = ds_otc_effect_size.where(ds_otc_effect_size.lat >= 75, np.nan).groupby('year_month').mean(dim=['time','lat','lon'], skipna=True).persist()
+        ds_otc_month_ef = ds_otc_effect_size.groupby('year_month').mean(dim=['time','lat','lon'], skipna=True).persist()
+        with open(Path(config['output_dir'] + 'figures/debug_cartopy.txt'), 'a') as pf:
+            print('otc effect size timeseries:', file=pf)
+            print(ds_otc_month_ef, file=pf)
+        year_index = ds_otc_month_ef['year'].values
+        month_index = ds_otc_month_ef['month'].values
+        year_month_index = tuple(zip(year_index, month_index))
+        f_string_index = [f'{a:04}-{b:02}-01' for a, b in year_month_index]
+        with open(Path(config['output_dir'] + 'figures/debug_cartopy.txt'), 'a') as pf:
+            print('year index:', file=pf)
+            print(year_index, file=pf)
+            print('month index:', file=pf)
+            print(month_index, file=pf)
+            print('combined index:', file=pf)
+            print(year_month_index, file=pf)
+            print('date index:', file=pf)
+            print(f_string_index, file=pf)
+        ds_otc_multiindex = pd.to_datetime(f_string_index)
+        with open(Path(config['output_dir'] + 'figures/debug_cartopy.txt'), 'a') as pf:
+            print('otc effect size multiindex:', file=pf)
+            print(ds_otc_multiindex, file=pf)
+        #ds_otc_month_ef_res = ds_otc_month_ef.reset_index('year_month').persist() 
+        #with open(Path(config['output_dir'] + 'figures/debug_cartopy.txt'), 'a') as pf:
+        #    print('otc reset multiindex:', file=pf)
+        #    print(ds_otc_month_ef_res, file=pf)
+        #ds_otc_summer_ef = ds_otc_effect_size.where(ds_otc_effect_size.lat >= 75, np.nan).sel(month=[6,7,8]).groupby('year').mean(dim=['year_month'], skipna=True).persist()
+        #ds_otc_winter_ef = ds_otc_effect_size.where(ds_otc_effect_size.lat >= 75, np.nan).sel(month=[12,1,2]).groupby('year').mean(dim=['year_month'], skipna=True).persist()
+        #with open(Path(config['output_dir'] + 'figures/debug_cartopy.txt'), 'a') as pf:
+        #    print('otc effect size summer/winter averages:', file=pf)
+        #    print(ds_otc_summer_ef, file=pf)
+        #    print(ds_otc_winter_ef, file=pf)
+        ds_otc_seasonal_ef = ds_otc_month_ef.groupby('month').mean(dim=['year_month'], skipna=True).persist()
+        with open(Path(config['output_dir'] + 'figures/debug_cartopy.txt'), 'a') as pf:
+            print('otc seasonal effect size:', file=pf)
+            print(ds_otc_seasonal_ef, file=pf)
+        #
+        ds_geo_sf_month_ef = ds_sf_effect_size.groupby('year_month').mean(dim=['time'], skipna=True).persist()
+        #ds_sf_month_ef = ds_sf_effect_size.where(ds_sf_effect_size.lat > 75, np.nan).groupby('year_month').mean(dim=['time','lat','lon'], skipna=True).persist()
+        ds_sf_month_ef = ds_sf_effect_size.groupby('year_month').mean(dim=['time','lat','lon'], skipna=True).persist()
+        #ds_otc_summer_ef = ds_otc_effect_size.where(ds_otc_effect_size.lat >= 75, np.nan).sel(month=[6,7,8]).groupby('year').mean(dim=['year_month'], skipna=True).persist()
+        #ds_otc_winter_ef = ds_otc_effect_size.where(ds_otc_effect_size.lat >= 75, np.nan).sel(month=[12,1,2]).groupby('year').mean(dim=['year_month'], skipna=True).persist()
+        ds_sf_seasonal_ef = ds_sf_month_ef.groupby('month').mean(dim=['year_month'], skipna=True).persist()
+        #
+        ds_season_mean = ds.groupby('year_season').mean(dim=['time','lat','lon'], skipna=True).persist()
+        ds_summer_mean = ds_season_mean.sel(season=1, drop=True).persist()
+        ds_season_ensemble = ds.groupby('year_season').mean(dim=['time','model','lat','lon'], skipna=True).persist()
+        ds_summer_ensemble = ds_season_ensemble.sel(season=1, drop=True).persist()
+        ds_season_stdev = ds.groupby('year_season').std(dim=['time','lat','lon'], skipna=True).persist()
+        ds_summer_stdev = ds_season_stdev.sel(season=1, drop=True).persist()
+        ds_season_ensemble_stdev = ds.groupby('year_season').std(dim=['time','model','lat','lon'], skipna=True).persist()
+        ds_summer_ensemble_stdev = ds_season_ensemble_stdev.sel(season=1, drop=True).persist()
+        with open(Path(config['output_dir'] + 'figures/debug_cartopy.txt'), 'a') as pf:
+            print('mean/sd by month within year:', file=pf)
+            print(ds_season_mean, file=pf)
+            print(ds_summer_mean, file=pf)
+            print(ds_season_stdev, file=pf)
+            print(ds_summer_stdev, file=pf)
+        # add year_month index to diff values
+        ds_otc_diff.coords['year_season'] = ('time', year_season_idx)
+        ds_sf_diff.coords['year_season'] = ('time', year_season_idx)
+        ds_sf_otc_diff.coords['year_season'] = ('time', year_season_idx)
+        with open(Path(config['output_dir'] + 'figures/debug_cartopy.txt'), 'a') as pf:
+            print('diff calc', file=pf)
+            print(ds_otc_diff, file=pf)
+            print(ds_sf_diff, file=pf)
+            print(ds_sf_otc_diff, file=pf)
+        #
+        ds_geo_mean_timeseries = ds2.groupby('year_month').mean(dim=['time'], skipna=True).persist()
+        # 
+        avg_type = ['time','lat','lon']
+        ds_otc_season_mean = ds_otc_diff.groupby('year_season').mean(dim=avg_type, skipna=True).persist()
+        ds_otc_season_stdev = ds_otc_diff.groupby('year_season').std(dim=avg_type, skipna=True).persist()
+        ds_otc_summer_mean = ds_otc_season_mean.sel(season=1, drop=True).persist()
+        ds_otc_summer_stdev = ds_otc_season_stdev.sel(season=1, drop=True).persist()
+        ds_otc_winter_mean = ds_otc_season_mean.sel(season=2, drop=True).persist()
+        ds_otc_winter_stdev = ds_otc_season_stdev.sel(season=2, drop=True).persist()
+        #
+        ds_sf_season_mean = ds_sf_diff.groupby('year_season').mean(dim=avg_type, skipna=True).persist()
+        ds_sf_season_stdev = ds_sf_diff.groupby('year_season').std(dim=avg_type, skipna=True).persist()
+        ds_sf_summer_mean = ds_sf_season_mean.sel(season=1, drop=True).persist()
+        ds_sf_summer_stdev = ds_sf_season_stdev.sel(season=1, drop=True).persist()
+        ds_sf_winter_mean = ds_sf_season_mean.sel(season=2, drop=True).persist()
+        ds_sf_winter_stdev = ds_sf_season_stdev.sel(season=2, drop=True).persist()
+        #
+        ds_sf_otc_season_mean = ds_sf_otc_diff.groupby('year_season').mean(dim=avg_type, skipna=True).persist()
+        ds_sf_otc_season_stdev = ds_sf_otc_diff.groupby('year_season').std(dim=avg_type, skipna=True).persist()
+        ds_sf_otc_summer_mean = ds_sf_otc_season_mean.sel(season=1, drop=True).persist()
+        ds_sf_otc_summer_stdev = ds_sf_otc_season_stdev.sel(season=1, drop=True).persist()
+        # ensemble
+        avg_type = ['time','model','lat','lon']
+        ds_otc_season_ensemble = ds_otc_diff.groupby('year_season').mean(dim=avg_type, skipna=True).persist()
+        ds_sf_season_ensemble = ds_sf_diff.groupby('year_season').mean(dim=avg_type, skipna=True).persist()
+        ds_sf_otc_season_ensemble = ds_sf_otc_diff.groupby('year_season').mean(dim=avg_type, skipna=True).persist()
+        ds_otc_summer_ensemble = ds_otc_season_ensemble.sel(season=1, drop=True).persist()
+        ds_sf_summer_ensemble = ds_sf_season_ensemble.sel(season=1, drop=True).persist()
+        ds_otc_winter_ensemble = ds_otc_season_ensemble.sel(season=2, drop=True).persist()
+        ds_sf_winter_ensemble = ds_sf_season_ensemble.sel(season=2, drop=True).persist()
+        ds_sf_otc_summer_ensemble = ds_sf_otc_season_ensemble.sel(season=1, drop=True).persist()
+        # add year_month index to diff values
+        ds_otc_diff2.coords['year_month'] = ('time', year_month_idx)
+        ds_sf_diff2.coords['year_month'] = ('time', year_month_idx)
+        ds_otc_diff3.coords['year_season'] = ('time', year_peak_idx)
+        ds_sf_diff3.coords['year_season'] = ('time', year_peak_idx)
+        ds_sf_otc_diff2.coords['year_month'] = ('time', year_month_idx)
+        with open(Path(config['output_dir'] + 'figures/debug_cartopy.txt'), 'a') as pf:
+            print('diff calc', file=pf)
+            print(ds_otc_diff2, file=pf)
+            print(ds_sf_diff2, file=pf)
+            print(ds_sf_otc_diff2, file=pf)
+        # 
+        avg_type = ['time','lat','lon']
+        ds_geo_otc_season_mean = ds_otc_diff2.groupby('year_month').mean(dim=avg_type, skipna=True).persist()
+        ds_geo_sf_season_mean = ds_sf_diff2.groupby('year_month').mean(dim=avg_type, skipna=True).persist()
+        with open(Path(config['output_dir'] + 'figures/debug_cartopy.txt'), 'a') as pf:
+            print('season timeseries:', file=pf)
+            print(ds_geo_otc_season_mean, file=pf)
+            print(ds_geo_sf_season_mean, file=pf)
+        ds_geo_otc_season_mean = ds_geo_otc_season_mean.sel(month = 7, drop=True).persist() 
+        ds_geo_sf_season_mean = ds_geo_sf_season_mean.sel(month = 7, drop=True).persist()
+        with open(Path(config['output_dir'] + 'figures/debug_cartopy.txt'), 'a') as pf:
+            print('summer timeseries averages:', file=pf)
+            print(ds_geo_otc_season_mean, file=pf)
+            print(ds_geo_sf_season_mean, file=pf)
+        ds_geo_otc_year_month_mean = ds_otc_diff2.groupby('year_month').mean(dim=avg_type, skipna=True).persist()
+        ds_geo_sf_year_month_mean = ds_sf_diff2.groupby('year_month').mean(dim=avg_type, skipna=True).persist()
+        ds_geo_otc_month_mod_mean = ds_geo_otc_year_month_mean.groupby('month').mean(dim=['year_month'], skipna=True).persist()
+        ds_geo_sf_month_mod_mean = ds_geo_sf_year_month_mean.groupby('month').mean(dim=['year_month'], skipna=True).persist()
+        with open(Path(config['output_dir'] + 'figures/debug_cartopy.txt'), 'a') as pf:
+            print('diff geo month means', file=pf)
+            print(ds_geo_otc_month_mod_mean, file=pf)
+        ds_otc_season_mod_normalized = ds_geo_otc_season_mean.groupby('model') / ds_mod_means_b2
+        ds_sf_season_mod_normalized = ds_geo_sf_season_mean.groupby('model') / ds_mod_means_b2
+        ds_otc_year_mod_normalized = ds_geo_otc_year_month_mean.groupby('model') / ds_mod_means_b2
+        ds_sf_year_mod_normalized = ds_geo_sf_year_month_mean.groupby('model') / ds_mod_means_b2
+        ds_otc_month_mod_normalized = ds_geo_otc_month_mod_mean.groupby('model') / ds_mod_means_b2
+        ds_sf_month_mod_normalized = ds_geo_sf_month_mod_mean.groupby('model') / ds_mod_means_b2
+        with open(Path(config['output_dir'] + 'figures/debug_cartopy.txt'), 'a') as pf:
+            print('diff geo month means normalized', file=pf)
+            print(ds_otc_month_mod_normalized, file=pf)
+        ds_otc_mean_effectsize = ds_otc_year_mod_normalized.groupby('month').mean(dim=['model'], skipna=True).persist()
+        with open(Path(config['output_dir'] + 'figures/debug_cartopy.txt'), 'a') as pf:
+            print('diff geo mean effect size by month', file=pf)
+            print(ds_otc_mean_effectsize, file=pf)
+        #
+        ds_geo_sf_year_month_mean = ds_sf_diff2.groupby('year_month').mean(dim=avg_type, skipna=True).persist()
+        ds_geo_sf_month_mean = ds_geo_sf_year_month_mean.groupby('month').mean(dim=['year_month','model'], skipna=True).persist()
+        # 
+        avg_type = ['time','lat','lon']
+        ds_otc_year_month_mean = ds_otc_diff2.groupby('year_month').mean(dim=avg_type, skipna=True).persist()
+        ds_otc_month_mean = ds_otc_year_month_mean.groupby('month').mean(dim=['year_month'], skipna=True).persist()
+        ds_otc_year_month_stdev = ds_otc_diff2.groupby('year_month').std(dim=avg_type, skipna=True).persist()
+        #
+        ds_sf_year_month_mean = ds_sf_diff2.groupby('year_month').mean(dim=avg_type, skipna=True).persist()
+        ds_sf_month_mean = ds_sf_year_month_mean.groupby('month').mean(dim=['year_month'], skipna=True).persist()
+        ds_sf_year_month_stdev = ds_sf_diff2.groupby('year_month').std(dim=avg_type, skipna=True).persist()
+        #
+        ds_sf_otc_month_mean = ds_sf_otc_diff2.groupby('year_month').mean(dim=avg_type, skipna=True).persist()
+        ds_sf_otc_month_stdev = ds_sf_otc_diff2.groupby('year_month').std(dim=avg_type, skipna=True).persist()
+        # ensemble
+        avg_type = ['time','model','lat','lon']
+        ds_otc_year_month_ensemble = ds_otc_diff2.groupby('year_month').mean(dim=avg_type, skipna=True).persist()
+        ds_otc_month_ensemble = ds_otc_year_month_ensemble.groupby('month').mean(dim=['year_month'], skipna=True).persist()
+        ds_sf_year_month_ensemble = ds_sf_diff2.groupby('year_month').mean(dim=avg_type, skipna=True).persist()
+        ds_sf_month_ensemble = ds_sf_year_month_ensemble.groupby('month').mean(dim=['year_month'], skipna=True).persist()
+        ds_sf_otc_year_month_ensemble = ds_sf_otc_diff2.groupby('year_month').mean(dim=avg_type, skipna=True).persist()
+        # debug outputs 
+        with open(Path(config['output_dir'] + 'figures/debug_cartopy.txt'), 'a') as pf:
+            print('soil subset with sel', file=pf)
+            print(ds_geo_means, file=pf)
+            print(ds_geo_summer_means, file=pf)
+            print(ds_geo_winter_means, file=pf)
+            print(ds_geo_month_means, file=pf)
+            print(ds_time_means, file=pf)
+            print(ds_time_mod_mean, file=pf)
+            print(ds['sim'].values, file=pf)
+            print(str(ds['sim'].values), file=pf)
+            print(ds['model'].values, file=pf)
+            print(str(ds['model'].values), file=pf)
+        # graph for each variable
+        for var in var_list: 
             # make necessary folders
-            Path('/projects/warpmip/shared/processed_outputs/regional/figures/' + graph_type).mkdir(parents=True, exist_ok=True)
-            Path('/projects/warpmip/shared/processed_outputs/regional/figures/' + graph_type).chmod(0o762)
-            # create outfile for each combination
-            out_file = '/projects/warpmip/shared/processed_outputs/regional/figures/' + graph_type + \
-                       '/Regional_harmonized_'+graph_type+'_'+season[1]+'_'+var+'_'+str(sim)+'.png' 
-            # subset seasonal data to perturbation simulation of interest
-            dsg = season[0].sel(sim=sim)
-            # Set figure size
-            fig = plt.figure(figsize=(8,6))
-            # Set the axes using the specified map projection
-            ax=plt.axes(projection=ccrs.Orthographic(0,90))
-            # Make a mesh plot
-            cs=ax.pcolormesh(dsg['lon'], dsg['lat'], dsg[var], clim=(var_min,var_max),
-                        transform = ccrs.PlateCarree(),cmap='coolwarm')
-            ax.coastlines()
-            #ax.gridlines()
-            cbar = plt.colorbar(cs,shrink=0.7,location='left',label=var)
-            ax.yaxis.set_ticks_position('left')
-            ax.set_extent([-180,180,55,90], crs=ccrs.PlateCarree())
-            add_circle_boundary(ax)
-            plt.savefig(out_file, dpi=150)
-            plt.close(fig)
+            Path(config['output_dir'] + 'figures/' + var).mkdir(parents=True, exist_ok=True)
+            Path(config['output_dir'] + 'figures/' + var).chmod(0o762)
+            max_geo_means = max(ds_geo_means[var].max().values, ds_geo_summer_means[var].max().values, ds_geo_winter_means[var].max().values)
+            min_geo_means = min(ds_geo_means[var].min().values, ds_geo_summer_means[var].min().values, ds_geo_winter_means[var].min().values)
+            max_geo_stdev = max(ds_geo_means[var].max().values, ds_geo_summer_means[var].max().values, ds_geo_winter_means[var].max().values)
+            max_geo_season_means = ds_geo_month_means[var].max().values
+            min_geo_season_means = ds_geo_month_means[var].min().values
+            max_geo_season_stdev = ds_geo_month_means[var].max().values
+            if var in ['TotalResp','GPP']:
+                units = 'g C m-2 day-1'
+            elif var in ['ALT', 'WTD']:
+                units = 'm'
+            elif var in ['SoilTemp']:
+                units = '°C'  
+            for sim in ds['sim'].values:
+                ##############################################################
+                
+                ##############################################################
+                if sim in ['otc', 'sf']:
+                    with open(Path(config['output_dir'] + 'figures/debug_cartopy.txt'), 'a') as pf:
+                        print('starting year_diff plots -- summer', file=pf)
+                    if sim == 'otc':
+                        out_year = config['output_dir'] + 'figures/'+ var + '/Pan-Arctic_mean_' + var + '_year_diff_' + str(sim) + '.png' 
+                        ds_month = ds_otc_season_mod_normalized[var] * 100 #.sel(model=['CLM5','CLM5-ExIce','ELM2-NGEE','JSBACH','ecosys','ELM1-ECA'])
+                        #ds_stdev = ds_otc_summer_stdev[var].sel(year=slice(2000,2021))
+                        #mod_time = ds_otc_summer_ensemble['year'].sel(year=slice(2000,2021)).values 
+                        #mod_var = ds_otc_summer_ensemble[var].sel(year=slice(2000,2021)).values 
+                    elif sim == 'sf':
+                        out_year = config['output_dir'] + 'figures/'+ var + '/Pan-Arctic_mean_' + var + '_year_diff_' + str(sim) + '.png' 
+                        ds_month = ds_sf_season_mod_normalized[var] * 100 #.sel(model=['CLM5','CLM5-ExIce','ELM2-NGEE','JSBACH','ecosys','ELM1-ECA'])
+                        #ds_stdev = ds_sf_summer_stdev[var].sel(year=slice(2000,2021))
+                        #mod_time = ds_sf_summer_ensemble['year'].sel(year=slice(2000,2021)).values 
+                        #mod_var = ds_sf_summer_ensemble[var].sel(year=slice(2000,2021)).values
+                    #y_min = min(ds_otc_month_ef[var].min().values, ds_sf_month_ef[var].min().values)
+                    #y_max = max(ds_otc_month_ef[var].max().values, ds_sf_month_ef[var].max().values)
+                    fig_year_diff_summer = plt.figure(figsize=(8,6))
+                    #ds_sub_time = pd.to_datetime([f'{a:04}-{b:02}-01' for a, b in tuple(zip(ds_otc_month_ef['year'].values,ds_otc_month_ef['month'].values))])
+                    ds_sub_time = pd.to_datetime([f'{a:04}-01-01' for a in ds_otc_season_mod_normalized['year'].values])
+                    for mod in ds_month['model'].values:
+                        ds_sub_mod_var = ds_month.sel(model=mod).values
+                        #ds_sub_mod_sd = ds_stdev.sel(model=mod).values
+                        plt.plot(ds_sub_time, ds_sub_mod_var, label=mod)
+                    #plt.plot(mod_time, mod_var, linestyle='--', color='black', label='ensemble')
+                    plt.xlabel('Year', fontsize=16)
+                    #y_lab = 'Delta ' + str(var) + ' (' + units + ')' 
+                    y_lab = str(var)+ ' Change from Baseline Mean (%)' 
+                    plt.ylabel(y_lab, fontsize=16) 
+                    plt.legend() 
+                    #plt.ylim((-0.5, 1.0))
+                    plt.savefig(out_year, dpi=300)
+                    plt.close(fig_year_diff_summer)
+                #####
+                # if sim in ['otc', 'sf']:
+                #     with open(Path(config['output_dir'] + 'figures/debug_cartopy.txt'), 'a') as pf:
+                #         print('starting year_diff plots -- winter', file=pf)
+                #     if sim == 'otc':
+                #         out_year = config['output_dir'] + 'figures/'+ var + '/Pan-Arctic_mean_winter' + var + '_year_diff_' + str(sim) + '.png' 
+                #         ds_month = ds_otc_month_ef[var]
+                #         #ds_stdev = ds_otc_winter_stdev[var].sel(year=slice(2000,2021))
+                #         #mod_time = ds_otc_winter_ensemble['year'].sel(year=slice(2000,2021)).values 
+                #         #mod_var = ds_otc_winter_ensemble[var].sel(year=slice(2000,2021)).values 
+                #     elif sim == 'sf':
+                #         out_year = config['output_dir'] + 'figures/'+ var + '/Pan-Arctic_mean_winter' + var + '_year_diff_' + str(sim) + '.png' 
+                #         ds_month = ds_sf_month_ef[var]
+                #         #ds_stdev = ds_sf_winter_stdev[var].sel(year=slice(2000,2021))
+                #         #mod_time = ds_sf_winter_ensemble['year'].sel(year=slice(2000,2021)).values 
+                #         #mod_var = ds_sf_winter_ensemble[var].sel(year=slice(2000,2021)).values
+                #     y_min = min(ds_otc_month_ef[var].min().values, ds_sf_month_ef[var].min().values)
+                #     y_max = max(ds_otc_month_ef[var].max().values, ds_sf_month_ef[var].max().values)
+                #     fig_year_diff_winter = plt.figure(figsize=(8,6))
+                #     ds_sub_time = pd.to_datetime([f'{a}-{b}-01' for a, b in ds_month['year_month']])
+                #     for mod in ds_month['model'].values:
+                #         ds_sub_mod_var = ds_month.sel(model=mod).values
+                #         #ds_sub_mod_sd = ds_stdev.sel(model=mod).values
+                #         plt.plot(ds_sub_time, ds_sub_mod_var, label=mod)
+                #     #plt.plot(mod_time, mod_var, linestyle='--', color='black', label='ensemble')
+                #     plt.xlabel('Year')
+                #     y_lab = 'Delta Mean Winter ' + str(var) + ' (' + units + ')' 
+                #     plt.ylabel(y_lab) 
+                #     plt.legend() 
+                #     plt.ylim((y_min, y_max))
+                #     plt.savefig(out_year, dpi=300)
+                #     plt.close(fig_year_diff_winter)
+                ##############################################################
+                out_year = config['output_dir'] + 'figures/'+ var + '/Pan-Arctic_mean_' + var + '_year_' + str(sim) + '.png' 
+                ds_month = ds_summer_mean[var].sel(sim=sim, year=slice(2001,2020))
+                ds_stdev = ds_summer_stdev[var].sel(sim=sim, year=slice(2001,2020))
+                with open(Path(config['output_dir'] + 'figures/debug_cartopy.txt'), 'a') as pf:
+                    print('ds_month:', file=pf)
+                    print(ds_month, file=pf)
+                    print(ds_stdev, file=pf)
+                fig_year = plt.figure(figsize=(8,6))
+                for mod in ds_month['model'].values:
+                    ds_sub_time = ds_month['year'].values
+                    ds_sub_mod_var = ds_month.sel(model=mod).values
+                    ds_sub_mod_sd = ds_stdev.sel(model=mod).values
+                    with open(Path(config['output_dir'] + 'figures/debug_cartopy.txt'), 'a') as pf:
+                        print('ds_month for ' + str(mod) + ':', file=pf)
+                        print(mod, file=pf)
+                        print(ds_sub_time, file=pf)
+                        print(ds_sub_mod_var, file=pf)
+                        print(ds_sub_mod_sd, file=pf)
+                    plt.errorbar(x=ds_sub_time, y=ds_sub_mod_var, yerr=ds_sub_mod_sd, fmt='o', label=mod)
+                mod_time = ds_summer_ensemble['year'].sel(year=slice(2001,2020)).values 
+                mod_var = ds_summer_ensemble[var].sel(sim=sim, year=slice(2001,2020)).values 
+                with open(Path(config['output_dir'] + 'figures/debug_cartopy.txt'), 'a') as pf:
+                    print('ds_month_mod for ' + str(sim) + ':', file=pf)
+                    print(mod_time, file=pf)
+                    print(mod_var, file=pf)
+                plt.plot(mod_time, mod_var, linestyle='--', color='black', label='ensemble')
+                plt.xlabel('Year')
+                y_lab = 'Mean Summer ' + str(var) + ' (' + units + ')' 
+                plt.ylabel(y_lab) 
+                plt.legend() 
+                plt.savefig(out_year, dpi=300)
+                plt.close(fig_year)
+                ##############################################################
+                if sim in ['otc', 'sf']:
+                    with open(Path(config['output_dir'] + 'figures/debug_cartopy.txt'), 'a') as pf:
+                        print('starting season_diff plots -- summer', file=pf)
+                    if sim == 'otc':
+                        out_month = config['output_dir'] + 'figures/'+ var + '/Pan-Arctic_mean_' + var + '_seasonal_diff_' + str(sim) + '.png' 
+                        ds_month = ds_otc_month_mod_normalized[var] * 100 #.sel(model=['CLM5','CLM5-ExIce','ELM2-NGEE','JSBACH','ecosys','ELM1-ECA'])
+                        with open(Path(config['output_dir'] + 'figures/debug_cartopy.txt'), 'a') as pf:
+                            print('ds_month for diff plots:' + str(sim) + ':', file=pf)
+                            print(ds_month, file=pf)
+                        #mod_time = ds_otc_month_ensemble['month'].values 
+                        #mod_var = ds_otc_month_ensemble[var].values
+                    elif sim == 'sf':
+                        out_month = config['output_dir'] + 'figures/'+ var + '/Pan-Arctic_mean_' + var + '_seasonal_diff_' + str(sim) + '.png' 
+                        ds_month = ds_sf_month_mod_normalized[var] * 100 #.sel(model=['CLM5','CLM5-ExIce','ELM2-NGEE','JSBACH','ecosys','ELM1-ECA'])
+                        with open(Path(config['output_dir'] + 'figures/debug_cartopy.txt'), 'a') as pf:
+                            print('ds_month for diff plots:' + str(sim) + ':', file=pf)
+                            print(ds_month, file=pf)
+                        #mod_time = ds_sf_month_ensemble['month'].values 
+                        #mod_var = ds_sf_month_ensemble[var].values
+                    #y_min = min(ds_otc_month_mean[var].min().values, ds_sf_otc_month_mean[var].min().values)
+                    #y_max = max(ds_otc_month_mean[var].max().values, ds_sf_otc_month_mean[var].max().values)
+                    
+                    #mods = list(ds_month['model'].values)
+                    #mod_num = len(mods)
+                    #years = np.unique(ds_month['year'].values)
+                    #years_num = len(years)
+                    #plt_shapes = ["o","v","^","<",">","s","p","*","+","D","x"]
+                    #plt_colors = matplotlib.get_cmap('viridis', years_num)
+                    #shape_dict = dict(zip(mods, plt_shapes[:mod_num]))
+                    #color_dict = dict(zip(years, plt_colors))
+                    fig_month_diff = plt.figure(figsize=(8,6))
+                    for mod in ds_month['model'].values:
+                        ds_sub_time = ds_month['month'].values
+                        ds_sub_mod_var = ds_month.sel(model=mod).values
+                        plt.plot(ds_sub_time, ds_sub_mod_var, label=mod)
+                    #plt.plot(mod_time, mod_var, linestyle='--', color='black', label='ensemble')  
+                    plt.xlabel('Month', fontsize=16)  
+                    y_lab = str(var) + ' Change from Baseline Mean (%)'
+                    plt.ylabel(y_lab, fontsize=16)  
+                    plt.legend()
+                    #plt.ylim((-0.5, 1.0))
+                    plt.savefig(out_month, dpi=300)
+                    plt.close(fig_month_diff)
+                #####
+                if sim in ['sf']:
+                    with open(Path(config['output_dir'] + 'figures/debug_cartopy.txt'), 'a') as pf:
+                        print('starting season_diff plots -- combined', file=pf)
+                    out_month = config['output_dir'] + 'figures/'+ var + '/Pan-Arctic_mean_' + var + '_seasonal_diff_combined.png' 
+                    ds_month_otc = ds_otc_seasonal_ef[var]
+                    ds_month_sf = ds_sf_seasonal_ef[var]
+                    y_min = min(ds_month_otc.min().values, ds_month_sf.min().values)
+                    y_max = max(ds_month_otc.max().values, ds_month_sf.max().values)
+                    fig_month_diff_both = plt.figure(figsize=(8,6))
+                    for mod in ds_month['model'].values:
+                        ds_sub_time_otc = ds_month_otc['month'].values
+                        ds_sub_mod_var_otc = ds_month_otc.sel(model=mod).values
+                        ds_sub_time_sf = ds_month_sf['month'].values
+                        ds_sub_mod_var_sf = ds_month_sf.sel(model=mod).values
+                        plt.plot(ds_sub_time_otc, ds_sub_mod_var_otc, label=mod, linestyle='solid')
+                        plt.plot(ds_sub_time_sf, ds_sub_mod_var_sf, label=mod, linestyle='dashed')
+                    #plt.plot(mod_time, mod_var, linestyle='--', color='black', label='ensemble')  
+                    plt.xlabel('Month')  
+                    y_lab = 'Delta Mean Monthly ' + str(var) + ' (' + units + ')'
+                    plt.ylabel(y_lab)  
+                    plt.legend()
+                    plt.ylim((y_min, y_max))
+                    plt.savefig(out_month, dpi=300)
+                    plt.close(fig_month_diff_both)
+                ##############################################################
+                out_month = config['output_dir'] + 'figures/'+ var + '/Pan-Arctic_mean_' + var + '_seasonal_' + str(sim) + '.png' 
+                ds_month = ds_geo_month_means[var].sel(sim=sim)
+                with open(Path(config['output_dir'] + 'figures/debug_cartopy.txt'), 'a') as pf:
+                    print('ds_month:', file=pf)
+                    print(ds_month, file=pf)
+                fig_month = plt.figure(figsize=(8,6))
+                for mod in ds_month['model'].values:
+                    ds_sub_time = ds_month['month'].values
+                    ds_sub_mod_var = ds_month.sel(model=mod).values
+                    with open(Path(config['output_dir'] + 'figures/debug_cartopy.txt'), 'a') as pf:
+                        print('ds_month for ' + str(mod) + ':', file=pf)
+                        print(mod, file=pf)
+                        print(ds_sub_time, file=pf)
+                        print(ds_sub_mod_var, file=pf)
+                    plt.plot(ds_sub_time, ds_sub_mod_var, label=mod)
+                mod_time = ds_geo_month_mod_mean['month'].values 
+                mod_var = ds_geo_month_mod_mean[var].sel(sim=sim).values 
+                with open(Path(config['output_dir'] + 'figures/debug_cartopy.txt'), 'a') as pf:
+                    print('ds_month_mod for ' + str(sim) + ':', file=pf)
+                    print(mod_time, file=pf)
+                    print(mod_var, file=pf)
+                plt.plot(mod_time, mod_var, linestyle='--', color='black', label='ensemble')  
+                plt.xlabel('Month')  
+                y_lab = 'Mean Monthly ' + str(var) + ' (' + units + ')' 
+                plt.ylabel(y_lab)  
+                plt.legend()
+                plt.savefig(out_month, dpi=300)
+                plt.close(fig_month)
+                ##############################################################
+                out_time = config['output_dir'] + 'figures/'+ var + '/Pan-Arctic_mean_' + var + '_timeseries_' + str(sim) + '.png' 
+                ds_time = ds_time_means[var].sel(sim=sim, time=slice('2001-01-01','2020-12-31'))
+                fig_time = plt.figure(figsize=(8,6))
+                for mod in ds_time['model'].values:
+                    plt.plot(ds_time['time'].values, ds_time.sel(model=mod).values, label=mod)
+                plt.plot(ds_time_mod_mean['time'].sel(time=slice('2001-01-01','2020-12-31')).values, \
+                         ds_time_mod_mean[var].sel(sim=sim, time=slice('2001-01-01','2020-12-31')).values, \
+                         linestyle='--', color='black', label='ensemble')  
+                plt.xlabel('Date')  
+                y_lab = 'Mean Daily ' + str(var) + ' (' + units + ')' 
+                plt.ylabel(y_lab)  
+                plt.legend()
+                plt.savefig(out_time, dpi=300)
+                plt.close(fig_time)
+                #####################################
+                # for year in [2001, 2005, 2010, 2020]: #range(2000,2022):
+                #     for month in range(1,13):
+                #         if var in ['NEE']:
+                #             # for mod in ds_geo_mean_timeseries['model'].values:
+                #             #     out_geo = config['output_dir'] + 'figures/' + var + '/Regional_harmonized_'+ var +'_brwn-green_'+str(mod)+'_'+str(sim)+'_'+str(year)+'_'+str(month)+'.png' 
+                #             #     geodiff = ds_geo_mean_timeseries[var].sel(sim=sim, year=2010, month=month, model=mod).copy(deep=True)
+                #             #     with open(Path(config['output_dir'] + 'figures/debug_cartopy.txt'), 'a') as pf:
+                #             #         print('NEE subset from ds_geo_mean_timeseries:' + str(mod) + ':', file=pf)
+                #             #         print(geodiff, file=pf)
+                #             #     # Set figure size
+                #             #     fig_geo_diff = plt.figure(figsize=(8,6))
+                #             #     # Set the axes using the specified map projection
+                #             #     ax=plt.axes(projection=ccrs.Orthographic(0,90))
+                #             #     # Make a mesh plot
+                #             #     cs=ax.pcolormesh(geodiff['lon'], geodiff['lat'], geodiff, clim=(-10,10), transform = ccrs.PlateCarree(), cmap='BrBG')
+                #             #     ax.coastlines()
+                #             #     ax.gridlines()
+                #             #     cbar = plt.colorbar(cs,shrink=0.7,location='left',label=var)
+                #             #     ax.yaxis.set_ticks_position('left')
+                #             #     ax.set_extent([-180,180,55,90], crs=ccrs.PlateCarree())
+                #             #     add_circle_boundary(ax)
+                #             #     plt.savefig(out_geo, dpi=300)
+                #             #     plt.close(fig_geo_diff)
+                #             # xarray plot
+                #             out_geo = config['output_dir'] + 'figures/' + var + '/Regional_harmonized_'+ var +'_brwn-green_xarray_'+str(sim)+'_'+str(year)+'_'+str(month)+'.png' 
+                #             ds_month = ds_geo_mean_timeseries[var].sel(sim=sim, year=year, month=month, model=['CLM5','CLM5-ExIce','ELM2-NGEE','JSBACH','ecosys','ELM1-ECA'])
+                #             p = ds_month.plot(x='lon', y='lat', col='model', col_wrap=3, cmap='BrBG_r', \
+                #                             transform=ccrs.PlateCarree(), vmin=-10, vmax=10, \
+                #                             subplot_kws={"projection": ccrs.Orthographic(0,90)}, \
+                #                             cbar_kwargs={'label': 'NEE (gC m-2 day-1)'})
+                #             for ax in p.axs.flat:
+                #                 ax.coastlines()
+                #                 ax.gridlines()
+                #                 ax.set_extent([-180,180,55,90], crs=ccrs.PlateCarree())
+                #                 add_circle_boundary(ax) 
+                #             plt.draw()
+                #             plt.savefig(out_geo, dpi=300)
+                #             plt.close('all')
+                #             if sim in ['otc','sf']:
+                #                 out_geo = config['output_dir'] + 'figures/' + var + '/Regional_harmonized_'+ var +'_brwn-green_xarray_diff'+str(sim)+'_'+str(year)+'_'+str(month)+'.png' 
+                #                 ds_month = ds_geo_mean_timeseries[var].sel(sim=sim, year=year, month=month, model=['CLM5','CLM5-ExIce','ELM2-NGEE','JSBACH','ecosys','ELM1-ECA']) - \
+                #                            ds_geo_mean_timeseries[var].sel(sim='b2', year=year, month=month, model=['CLM5','CLM5-ExIce','ELM2-NGEE','JSBACH','ecosys','ELM1-ECA'])
+                #                 p = ds_month.plot(x='lon', y='lat', col='model', col_wrap=3, cmap='BrBG_r', \
+                #                                 transform=ccrs.PlateCarree(), vmin=-5, vmax=5, \
+                #                                 subplot_kws={"projection": ccrs.Orthographic(0,90)}, \
+                #                                 cbar_kwargs={'label': 'Delta NEE (gC m-2 day-1)'})
+                #                 for ax in p.axs.flat:
+                #                     ax.coastlines()
+                #                     ax.gridlines()
+                #                     ax.set_extent([-180,180,55,90], crs=ccrs.PlateCarree())
+                #                     add_circle_boundary(ax) 
+                #                 plt.draw()
+                #                 plt.savefig(out_geo, dpi=300)
+                #                 plt.close('all')
+                ##############################################################
+                if sim in ['otc','sf']:
+                    with open(Path(config['output_dir'] + 'figures/debug_cartopy.txt'), 'a') as pf:
+                        print('starting geo_diff plots', file=pf)
+                    #y_min = min(ds_geo_otc_month_mean[var].min().values, ds_geo_sf_month_mean[var].min().values)
+                    #y_max = max(ds_geo_otc_month_mean[var].max().values, ds_geo_sf_month_mean[var].max().values)
+                    for month in range(1,13):
+                        for mod in ds_geo_otc_month_ef['model'].values:
+                            out_geo = config['output_dir'] + 'figures/' + var + '/Regional_harmonized_'+ var +'_'+ str(mod)+'_geodiff_'+str(sim)+'_month'+str(month)+'.png' 
+                            if sim == 'otc':
+                                geodiff = ds_geo_otc_month_ef[var].sel(year=2010, month=month, model=mod).copy(deep=True)
+                            if sim == 'sf':
+                                geodiff = ds_geo_sf_month_ef[var].sel(year=2010, month=month, model=mod).copy(deep=True)
+                            # Set figure size
+                            fig_geo_diff = plt.figure(figsize=(8,6))
+                            # Set the axes using the specified map projection
+                            ax=plt.axes(projection=ccrs.Orthographic(0,90))
+                            # Make a mesh plot
+                            cs=ax.pcolormesh(geodiff['lon'], geodiff['lat'], geodiff, transform = ccrs.PlateCarree(), cmap='viridis')
+                            ax.coastlines()
+                            #ax.gridlines()
+                            cbar = plt.colorbar(cs,shrink=0.7,location='left',label=var)
+                            ax.yaxis.set_ticks_position('left')
+                            ax.set_extent([-180,180,55,90], crs=ccrs.PlateCarree())
+                            add_circle_boundary(ax)
+                            plt.savefig(out_geo, dpi=300)
+                            plt.close(fig_geo_diff)
+                ##############################################################
+                for season in [[ds_geo_means[var],'annual'], [ds_geo_summer_means[var],'summer'], [ds_geo_winter_means[var],'winter']]:
+                    ###############################################################
+                    # create outfile
+                    out_sgeom = config['output_dir'] + 'figures/' + var + '/Regional_harmonized_'+ var +'_'+season[1]+'_geomean_'+str(sim)+'.png' 
+                    # subset seasonal data to perturbation simulation of interest
+                    sgeom = season[0].sel(sim=sim).copy(deep=True)
+                    # Set figure size
+                    fig_sgeom = plt.figure(figsize=(8,6))
+                    # Set the axes using the specified map projection
+                    ax=plt.axes(projection=ccrs.Orthographic(0,90))
+                    # Make a mesh plot
+                    cs=ax.pcolormesh(sgeom['lon'], sgeom['lat'], sgeom, clim=(min_geo_means,max_geo_means),
+                                transform = ccrs.PlateCarree(),cmap='viridis')
+                    ax.coastlines()
+                    #ax.gridlines()
+                    cbar = plt.colorbar(cs,shrink=0.7,location='left',label=var)
+                    ax.yaxis.set_ticks_position('left')
+                    ax.set_extent([-180,180,55,90], crs=ccrs.PlateCarree())
+                    add_circle_boundary(ax)
+                    plt.savefig(out_sgeom, dpi=300)
+                    plt.close(fig_sgeom)
+                    ################################################################
+                    # create outfile
+                    out_sgeosd = config['output_dir'] + 'figures/' + var + '/Regional_harmonized_'+ var +'_'+season[1]+'_geosd_'+str(sim)+'.png' 
+                    # subset seasonal data to perturbation simulation of interest
+                    sgeosd = season[0].sel(sim=sim).copy(deep=True)
+                    # Set figure size
+                    fig_sgeosd = plt.figure(figsize=(8,6))
+                    # Set the axes using the specified map projection
+                    ax=plt.axes(projection=ccrs.Orthographic(0,90))
+                    # Make a mesh plot
+                    cs=ax.pcolormesh(sgeosd['lon'], sgeosd['lat'], sgeosd, clim=(0,max_geo_stdev),
+                                transform = ccrs.PlateCarree(),cmap='Reds')
+                    ax.coastlines()
+                    #ax.gridlines()
+                    cbar = plt.colorbar(cs,shrink=0.7,location='left',label=var)
+                    ax.yaxis.set_ticks_position('left')
+                    ax.set_extent([-180,180,55,90], crs=ccrs.PlateCarree())
+                    add_circle_boundary(ax)
+                    plt.savefig(out_sgeosd, dpi=300)
+                    plt.close(fig_sgeosd)
+                    ###############################################################
+
 
 # create sub folder for site files
 def site_dir_prep(f):

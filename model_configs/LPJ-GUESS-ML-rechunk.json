@@ -1,0 +1,38 @@
+{
+	"model_name": "LPJ-GUESS-ML",
+	"b1_dir": "/projects/warpmip/shared/model_outputs/LPJ-GUESS-ML/1a/", 
+	"b1_str": "1a",
+	"b2_dir": "/projects/warpmip/shared/model_outputs/LPJ-GUESS-ML/1b/", 
+	"b2_str": "1b",
+	"otc_dir":"/projects/warpmip/shared/model_outputs/LPJ-GUESS-ML/1c/",
+	"otc_str":"1c",
+	"sf_dir": "/projects/warpmip/shared/model_outputs/LPJ-GUESS-ML/1d/", 
+	"sf_str": "1d",
+	"merge_type": "variables",
+	"has_b1": "True",
+	"has_b2": "True",
+	"has_otc": "True",
+	"has_sf": "True",
+	"subset_vars": [
+		"GPP",
+		"TotalResp",
+		"SoilTemp",
+		"ALT",
+		"SoilC",
+		"SoilN",
+		"CN",
+		"WTD"
+	],
+	"rename_subset": {
+		"latitude": "lat",
+		"longitude": "lon"
+	},
+	"data_units": {
+		"TotalResp": {"scale_type": "multiply", "scale_value": 1000.0, "units": "gC/m^2/s"},
+		"GPP": {"scale_type": "multiply", "scale_value": 1000.0, "units": "gC/m^2/s"},
+		"SoilC": {"scale_type": "multiply", "scale_value": 1000.0, "units": "gC/m^2"},
+		"SoilN": {"scale_type": "multiply", "scale_value": 1000.0, "units": "gN/m^2"}
+	},
+	"coords_units": {},
+	"soil_depths": [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]
+}

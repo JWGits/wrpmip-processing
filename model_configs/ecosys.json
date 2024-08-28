@@ -14,33 +14,20 @@
 	"has_otc": "True",
 	"has_sf": "True",
 	"subset_vars": [
+		"ECO_GPP",
 		"TotalResp",
 		"SoilTemp",
 		"ACTV_LYR"
 	],
 	"rename_subset": {
-		"ACTV_LYR": "ALT"
+		"ACTV_LYR": "ALT",
+		"ECO_GPP": "GPP"
 	},
 	"data_units": {
-		"TotalResp":{"scale_type": "multiply", "scale_value": 0.00001157407, "units": "g C m-2 s-1"}
+		"TotalResp":{"scale_type": "multiply", "scale_value": 0.00001157407, "units": "g C m-2 s-1"},
+		"GPP":{"scale_type": "multiply", "scale_value": 0.00001157407, "units": "g C m-2 s-1"},
+		"ALT":{"scale_type": "multiply", "scale_value": -1, "units": "m"}
 	},
 	"coords_units": {},
-	"soil_depths": [0.01, 0.04, 0.07, 0.14, 0.25, 0.38, 0.51, 0.85, 1.2, 2, 2.5],
-	"nc_read": {
-		"engine": "netcdf4",
-		"b1_chunks": {
-			"time": 120
-		},
-		"b2_chunks": {
-			"time": 73 
-		}
-	},
-	"nc_write": {
-		"engine": "netcdf4",
-		"zlib": "TRUE",
-		"complevel": 0,
-		"shuffle": "FALSE",
-		"fillvalue": -9999,		
-		"format": "NETCDF4_CLASSIC"
-	}
+	"soil_depths": [0.01, 0.04, 0.07, 0.14, 0.25, 0.38, 0.51, 0.85, 1.2, 2, 2.5]
 }

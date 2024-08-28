@@ -18,9 +18,11 @@
 		"L_vegnpp",
 		"L_soilresp",
 		"L_gndtemp",
-		"L_activelt"
+		"L_activelt",
+		"G_mskt"
 	],
 	"rename_subset": {
+		"L_veggpp": "GPP",
 		"L_gndtemp": "SoilTemp",
 		"longitude": "lon",
 		"latitude": "lat",
@@ -28,27 +30,11 @@
 		"L_activelt": "ALT"
 	},
 	"data_units": {
-		"TotalResp": {"scale_type": "multiply", "scale_value": 1000.0, "units": "gC/m^2/s"}
+		"TotalResp": {"scale_type": "multiply", "scale_value": 1000.0, "units": "gC/m^2/s"},
+		"GPP": {"scale_type": "multiply", "scale_value": 1000.0, "units": "gC/m^2/s"}
 	},
 	"coords_units": {},
 	"soil_depths": [0.05,0.185,0.415,0.81,1.485,2.63,4.58,7.905,13.57,23.23,39.705,67.8,115.705,198.1],
 	"soil_thickness": [0.1,0.17,0.29,0.5,0.85,1.44,2.46,4.19,7.14,12.18,20.77,35.42,60.39,104.4],
-	"soil_bottom": [0.1,0.27,0.56,1.06,1.91,3.35,5.81,10,17.14,29.32,50.09,85.51,145.9,250.4],
-	"nc_read": {
-		"engine": "netcdf4",
-		"b1_chunks": {
-			"time": 120 
-		},
-		"b2_chunks": {
-			"time": 73
-		}
-	},
-	"nc_write": {
-		"engine": "netcdf4",
-		"zlib": "TRUE",
-		"complevel": 0,
-		"shuffle": "FALSE",
-		"fillvalue": -9999,		
-		"format": "NETCDF4_CLASSIC"
-	}
+	"soil_bottom": [0.1,0.27,0.56,1.06,1.91,3.35,5.81,10,17.14,29.32,50.09,85.51,145.9,250.4]
 }

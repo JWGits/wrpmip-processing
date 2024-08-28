@@ -25,22 +25,5 @@
 	"data_units": {
 	},
 	"coords_units": {},
-	"soil_depths": [],
-	"nc_read": {
-		"engine": "netcdf4",
-		"b1_chunks": {
-			"time": 120
-		},
-		"b2_chunks": {
-			"time": 73  
-		}
-	},
-	"nc_write": {
-		"engine": "netcdf4",
-		"zlib": "TRUE",
-		"complevel": 0,
-		"shuffle": "FALSE",
-		"fillvalue": -9999,		
-		"format": "NETCDF4_CLASSIC"
-	}
+	"soil_depths": []
 }

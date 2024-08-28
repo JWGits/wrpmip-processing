@@ -1,0 +1,69 @@
+{
+	"output_dir": "/scratch/jw2636/processed_outputs/regional/",
+	"delete_dir": "/scratch/jw2636/for_deletion/",
+	"config_files": [
+		"/scratch/jw2636/wrpmip/python_codes/model_configs/LPJ-GUESS.json"
+	],
+	"other": [
+		"/scratch/jw2636/wrpmip/python_codes/model_configs/CLM5.json",
+		"/scratch/jw2636/wrpmip/python_codes/model_configs/CLM5-ExIce.json",
+		"/scratch/jw2636/wrpmip/python_codes/model_configs/ELM2-NGEE.json",
+		"/scratch/jw2636/wrpmip/python_codes/model_configs/JSBACH.json",
+		"/scratch/jw2636/wrpmip/python_codes/model_configs/UVic-ESCM.json",
+		"/scratch/jw2636/wrpmip/python_codes/model_configs/ecosys.json",
+		"/scratch/jw2636/wrpmip/python_codes/model_configs/ELM1-ECA.json",
+		"/scratch/jw2636/wrpmip/python_codes/model_configs/CLASSIC.json",
+		"/scratch/jw2636/wrpmip/python_codes/model_configs/LPJ-GUESS-ML.json",
+		"/scratch/jw2636/wrpmip/python_codes/model_configs/LPJ-GUESS.json",
+		"/scratch/jw2636/wrpmip/python_codes/model_configs/LPJ-wsl.json",
+		"/scratch/jw2636/wrpmip/python_codes/model_configs/ORCHIDEE-MICT",
+		"/scratch/jw2636/wrpmip/python_codes/model_configs/ORCHIDEE-MICT-teb",
+		"/scratch/jw2636/wrpmip/python_codes/model_configs/JULES"
+	],
+	"combined_vars": ["TotalResp","SoilTemp","WTD","ALT","GPP","SoilC","SoilN","CN"],
+	"models": {
+		"CLM5":      	1,
+		"CLM5-ExIce":	2,
+		"ELM2-NGEE": 	3,
+		"JSBACH":    	4,
+		"UVic-ESCM": 	5,
+		"ecosys":    	6,
+		"ELM1-ECA":  	7,
+		"CLASSIC":   	8,
+		"LPJ-GUESS-ML":	9,
+		"LPJ-GUESS":   10
+	},
+	"site_gps": {
+		"USA-EightMileLake":	{"lon_360": 210.77400, "lon": -149.22600, "lat": 63.88331}, 
+		"USA-Toolik":		{"lon_360": 210.42300, "lon": -149.57700, "lat": 68.62927},
+		"USA-Utqiagvik":	{"lon_360": 203.41000, "lon": -156.59000, "lat": 71.31000},
+		"USA-Atqasuk":		{"lon_360": 202.60000, "lon": -157.40000, "lat": 70.45000},	
+		"CAN-DaringLake":	{"lon_360": 248.43300, "lon": -111.56700, "lat": 64.86700},
+		"CAN-WanderingRiver":	{"lon_360": 247.48200, "lon": -112.51800, "lat": 55.35567},
+		"CAN-CambridgeBay":	{"lon_360": 254.93900, "lon": -105.06100, "lat": 69.13000},
+		"GRE-Disko":		{"lon_360": 306.48860, "lon": -53.51140, "lat": 69.31139},
+		"GRE-Zackenberg":	{"lon_360": 339.47000, "lon": -20.53000, "lat": 74.47000},
+		"NOR-Iskoras":		{"lon_360": 25.29600 , "lon": 25.29600 , "lat": 69.34100},
+		"RUS-Seida":		{"lon_360": 62.92642 , "lon": 62.92642 , "lat": 67.06618},
+		"SVA-Adventdalen":	{"lon_360": 16.04009 , "lon": 16.04009 , "lat": 78.17248},
+		"SVA-Endalen":		{"lon_360": 15.75851 , "lon": 15.75851 , "lat": 78.18820},	
+		"SWE-Abisko":		{"lon_360": 18.82000 , "lon": 18.82000 , "lat": 68.35000}
+	},
+	"nc_read": {
+		"engine": "netcdf4",
+		"b1_chunks": {
+			"time": 120 
+		},
+		"b2_chunks": {
+			"time": 73
+		}
+	},
+	"nc_write": {
+		"engine": "netcdf4",
+		"zlib": "TRUE",
+		"complevel": 6,
+		"shuffle": "FALSE",
+		"fillvalue": -9999,		
+		"format": "NETCDF4_CLASSIC"
+	}
+}
