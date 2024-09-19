@@ -17,12 +17,14 @@
 		"GPP",
 		"ER",
 		"TSOI",
+		"TOTSOMC_1m",
 		"ALTMAX",
 		"ZWT_PERCH"
 	],
 	"rename_subset": {
 		"ER": "TotalResp",
 		"TSOI": "SoilTemp",
+		"TOTSOMC_1m": "SoilC",
 		"levgrnd": "SoilDepth",
 		"ALTMAX": "ALT",
 		"ZWT_PERCH": "WTD"

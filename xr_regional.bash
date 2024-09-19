@@ -2,7 +2,7 @@
 #SBATCH -J dask-mpi
 #SBATCH -p core
 #SBATCH -C sl
-#SBATCH -t 02:00:00
+#SBATCH -t 01:00:00
 #SBATCH --nodes=10
 #SBATCH --ntasks-per-node=4
 #SBATCH --sockets-per-node=2

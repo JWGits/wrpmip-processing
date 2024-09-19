@@ -1,12 +1,12 @@
 {
 	"model_name": "LPJ-GUESS",
-	"b1_dir": "/scratch/jw2636/processed_outputs/LPJ-GUESS/", 
+	"b1_dir": "/scratch/jw2636/processed_outputs/LPJ-GUESS/LPJ-GUESS/", 
 	"b1_str": "1a",
-	"b2_dir": "/scratch/jw2636/processed_outputs/LPJ-GUESS/", 
+	"b2_dir": "/scratch/jw2636/processed_outputs/LPJ-GUESS/LPJ-GUESS/", 
 	"b2_str": "1b",
-	"otc_dir":"/scratch/jw2636/processed_outputs/LPJ-GUESS/",
+	"otc_dir":"/scratch/jw2636/processed_outputs/LPJ-GUESS/LPJ-GUESS/",
 	"otc_str":"1c",
-	"sf_dir": "/scratch/jw2636/processed_outputs/LPJ-GUESS/", 
+	"sf_dir": "/scratch/jw2636/processed_outputs/LPJ-GUESS/LPJ-GUESS/", 
 	"sf_str": "1d",
 	"merge_type": "variables",
 	"has_b1": "True",
@@ -21,11 +21,12 @@
 		"SoilC"
 	],
 	"rename_subset": {
-		"thaw": "ALT",
-		"nsoil": "SoilDepth"
+		"thaw": "ALT"
 	},
 	"data_units": {
-		"SoilC": {"scale_type": "multiply", "scale_value": 1000.0, "units": "gC/m^2"}
+		"SoilC": {"scale_type": "multiply", "scale_value": 1000.0, "units": "gC/m^2"},
+		"TotalResp": {"scale_type": "multiply", "scale_value": 0.00001157407, "units": "gC/m^2/s"},
+		"GPP": {"scale_type": "multiply", "scale_value": 0.00001157407, "units": "gC/m^2/s"}
 	},
 	"coords_units": {},
 	"soil_depths": [0.05, 0.15, 0.25, 0.35, 0.45, 0.55, 0.65, 0.75, 0.85, 0.95, 1.05,1.15, 1.25, 1.35, 1.45]

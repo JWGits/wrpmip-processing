@@ -2,7 +2,18 @@
 	"output_dir": "/scratch/jw2636/processed_outputs/regional/",
 	"delete_dir": "/scratch/jw2636/for_deletion/",
 	"config_files": [
-		"/scratch/jw2636/wrpmip/python_codes/model_configs/LPJ-GUESS.json"
+		"/scratch/jw2636/wrpmip/python_codes/model_configs/CLM5.json",
+		"/scratch/jw2636/wrpmip/python_codes/model_configs/CLM5-ExIce.json",
+		"/scratch/jw2636/wrpmip/python_codes/model_configs/ELM2-NGEE.json",
+		"/scratch/jw2636/wrpmip/python_codes/model_configs/JSBACH.json",
+		"/scratch/jw2636/wrpmip/python_codes/model_configs/UVic-ESCM.json",
+		"/scratch/jw2636/wrpmip/python_codes/model_configs/ecosys.json",
+		"/scratch/jw2636/wrpmip/python_codes/model_configs/ELM1-ECA.json",
+		"/scratch/jw2636/wrpmip/python_codes/model_configs/CLASSIC.json",
+		"/scratch/jw2636/wrpmip/python_codes/model_configs/LPJ-GUESS-ML.json",
+		"/scratch/jw2636/wrpmip/python_codes/model_configs/LPJ-GUESS.json",
+		"/scratch/jw2636/wrpmip/python_codes/model_configs/ORCHIDEE-MICT.json",
+		"/scratch/jw2636/wrpmip/python_codes/model_configs/ORCHIDEE-MICT-teb.json"
 	],
 	"other": [
 		"/scratch/jw2636/wrpmip/python_codes/model_configs/CLM5.json",
@@ -15,23 +26,25 @@
 		"/scratch/jw2636/wrpmip/python_codes/model_configs/CLASSIC.json",
 		"/scratch/jw2636/wrpmip/python_codes/model_configs/LPJ-GUESS-ML.json",
 		"/scratch/jw2636/wrpmip/python_codes/model_configs/LPJ-GUESS.json",
+		"/scratch/jw2636/wrpmip/python_codes/model_configs/ORCHIDEE-MICT.json",
+		"/scratch/jw2636/wrpmip/python_codes/model_configs/ORCHIDEE-MICT-teb.json",
 		"/scratch/jw2636/wrpmip/python_codes/model_configs/LPJ-wsl.json",
-		"/scratch/jw2636/wrpmip/python_codes/model_configs/ORCHIDEE-MICT",
-		"/scratch/jw2636/wrpmip/python_codes/model_configs/ORCHIDEE-MICT-teb",
-		"/scratch/jw2636/wrpmip/python_codes/model_configs/JULES"
+		"/scratch/jw2636/wrpmip/python_codes/model_configs/JULES.json"
 	],
 	"combined_vars": ["TotalResp","SoilTemp","WTD","ALT","GPP","SoilC","SoilN","CN"],
 	"models": {
-		"CLM5":      	1,
-		"CLM5-ExIce":	2,
-		"ELM2-NGEE": 	3,
-		"JSBACH":    	4,
-		"UVic-ESCM": 	5,
-		"ecosys":    	6,
-		"ELM1-ECA":  	7,
-		"CLASSIC":   	8,
-		"LPJ-GUESS-ML":	9,
-		"LPJ-GUESS":   10
+		"CLM5":      	     1,
+		"CLM5-ExIce":	     2,
+		"ELM2-NGEE": 	     3,
+		"JSBACH":    	     4,
+		"UVic-ESCM": 	     5,
+		"ecosys":    	     6,
+		"ELM1-ECA":  	     7,
+		"CLASSIC":   	     8,
+		"LPJ-GUESS-ML":	     9,
+		"LPJ-GUESS":         10,
+		"ORCHIDEE-MICT":     11,
+		"ORCHIDEE-MICT-teb": 12
 	},
 	"site_gps": {
 		"USA-EightMileLake":	{"lon_360": 210.77400, "lon": -149.22600, "lat": 63.88331}, 

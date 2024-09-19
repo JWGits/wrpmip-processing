@@ -1,36 +1,39 @@
 {
 	"model_name": "ORCHIDEE-MICT-teb",
 	"b1_dir": "/projects/warpmip/shared/model_outputs/ORCHIDEE/ORCHIDEE-MICT-teb/baseline_1901_1999_mon/", 
-	"b1_str": "stomate",
-	"b1_str2": "sechiba",
+	"b1_str": "",
 	"b2_dir": "/projects/warpmip/shared/model_outputs/ORCHIDEE/ORCHIDEE-MICT-teb/baseline_2000_2021_mon/", 
-	"b2_str": "stomate",
-	"b2_str2": "sechiba",
+	"b2_str": "",
 	"otc_dir": "/projects/warpmip/shared/model_outputs/ORCHIDEE/ORCHIDEE-MICT-teb/OTC_2000_2021_mon/",
-	"otc_str": "stomate",
-	"otc_str2": "sechiba",
+	"otc_str": "",
 	"sf_dir": "/projects/warpmip/shared/model_outputs/ORCHIDEE/ORCHIDEE-MICT-teb/SFW_2000_2021_mon/",
-	"sf_str": "stomate",
-	"sf_str2": "sechiba",
+	"sf_str": "",
 	"merge_type": "time",
 	"has_b1": "True",
 	"has_b2": "True",
 	"has_otc": "True",
 	"has_sf": "True",
+	"subset_sechiba": ["ptn","gpp"],	
+	"subset_stomate": ["ra","rh","alt","cSoil"],	
 	"subset_vars": [
-		"rh",
-		"ra"
-	],
-	"subset_vars2": [
-		"ptn"
+		"ptn",
+		"gpp",
+		"TotalResp",
+		"alt",
+		"cSoil"
 	],
 	"rename_subset": {
-		"latitude": "lat",
-		"longitude": "lon",
-		"nsoil": "SoilDepth" 
+		"ptn": "SoilTemp",
+		"gpp": "GPP",
+		"alt": "ALT",
+		"cSoil": "SoilC"
 	},
 	"data_units": {
+		"SoilTemp": {"scale_type": "add", "scale_value": -273.15, "units": "C"},
+		"TotalResp": {"scale_type": "multiply", "scale_value": 1000.0, "units": "gC/m^2/s"},
+		"GPP": {"scale_type": "multiply", "scale_value": 1000.0, "units": "gC/m^2/s"},
+		"SoilC": {"scale_type": "multiply", "scale_value": 1000.0, "units": "gC/m^2"}
 	},
 	"coords_units": {},
-	"soil_depths": []
+	"soil_depths": [0.0004887585535,0.001955034214,0.005865102642,0.0136852395,0.02932551321,0.06060606063,0.1231671555,0.2482893452,0.4985337246,0.9990224834,1.749755621,2.500488759,3.501466276,4.55249267,5.656070383,6.814826982,8.03152141,9.309050561,10.65045617,12.05893206,13.53783174,15.09067641,16.72116331,18.43317455,20.23078636,22.11827875,24.10014577,26.18110614,28.36611453,30.66037333,33.06934508,35.59876541]
 }

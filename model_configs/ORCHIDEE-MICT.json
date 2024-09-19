@@ -15,15 +15,22 @@
 	"has_sf": "True",
 	"subset_vars": [
 		"TotalResp",
-		"SoilTemp"
+		"SoilTemp",
+		"GPP",
+		"TotSoilCarb",
+		"ALT"
 	],
 	"rename_subset": {
 		"latitude": "lat",
 		"longitude": "lon",
-		"nsoil": "SoilDepth" 
+		"nsoil": "SoilDepth",
+		"TotSoilCarb": "SoilC"
 	},
 	"data_units": {
+		"TotalResp": {"scale_type": "multiply", "scale_value": 0.00001157407, "units": "gC/m^2/s"},
+		"GPP": {"scale_type": "multiply", "scale_value": 0.00001157407, "units": "gC/m^2/s"},
+		"SoilTemp": {"scale_type": "add", "scale_value": -273.15, "units": "C"}
 	},
 	"coords_units": {},
-	"soil_depths": []
+	"soil_depths": [0.0004887585535,0.001955034214,0.005865102642,0.0136852395,0.02932551321,0.06060606063,0.1231671555,0.2482893452,0.4985337246,0.9990224834,1.749755621,2.500488759,3.501466276,4.55249267,5.656070383,6.814826982,8.03152141,9.309050561,10.65045617,12.05893206,13.53783174,15.09067641,16.72116331,18.43317455,20.23078636,22.11827875,24.10014577,26.18110614,28.36611453,30.66037333,33.06934508,35.59876541]
 }

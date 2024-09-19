@@ -1,0 +1,31 @@
+{
+	"model_name": "LPJ-wsl",
+	"b1_dir": "", 
+	"b1_str": "",
+	"b2_dir": "", 
+	"b2_str": "",
+	"otc_dir":"",
+	"otc_str":"",
+	"sf_dir": "", 
+	"sf_str": "",
+	"merge_type": "variables",
+	"has_b1": "True",
+	"has_b2": "True",
+	"has_otc": "False",
+	"has_sf": "False",
+	"subset_vars": [
+		"mgpp",
+		"TotalResp",
+		"SoilTemp",
+		"mthaw_depth",
+		"SoilC"
+	],
+	"rename_subset": {
+		"thaw": "ALT"
+	},
+	"data_units": {
+		"SoilC": {"scale_type": "multiply", "scale_value": 1000.0, "units": "gC/m^2"}
+	},
+	"coords_units": {},
+	"soil_depths": [0.05, 0.15, 0.40, ]
+}
