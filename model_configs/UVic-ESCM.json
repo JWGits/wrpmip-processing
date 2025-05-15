@@ -14,24 +14,35 @@
 	"has_otc": "True",
 	"has_sf": "True",
 	"subset_vars": [
+		"A_sat",
 		"L_veggpp",
 		"L_vegnpp",
 		"L_soilresp",
+		"L_soilcarb",
+		"L_soilcarbD",
 		"L_gndtemp",
 		"L_activelt",
 		"G_mskt"
 	],
 	"rename_subset": {
+		"A_sat": "AirTemp",
+		"L_soilresp": "HeteroResp",
 		"L_veggpp": "GPP",
 		"L_gndtemp": "SoilTemp",
 		"longitude": "lon",
 		"latitude": "lat",
 		"gnd": "SoilDepth",
-		"L_activelt": "ALT"
+		"L_activelt": "ALT",
+		"L_soilcarb": "SoilC_Total",
+		"L_soilcarbD": "SoilCi_Layers"
 	},
 	"data_units": {
+		"AutoResp": {"scale_type": "multiply", "scale_value": 1000.0, "units": "gC/m^2/s"},
+		"HeteroResp": {"scale_type": "multiply", "scale_value": 1000.0, "units": "gC/m^2/s"},
 		"TotalResp": {"scale_type": "multiply", "scale_value": 1000.0, "units": "gC/m^2/s"},
-		"GPP": {"scale_type": "multiply", "scale_value": 1000.0, "units": "gC/m^2/s"}
+		"GPP": {"scale_type": "multiply", "scale_value": 1000.0, "units": "gC/m^2/s"},
+		"SoilC_Total": {"scale_type": "multiply", "scale_value": 1000.0, "units": "gC/m^2/"},
+		"SoilC_Layers": {"scale_type": "multiply", "scale_value": 1000.0, "units": "gC/m^2/"}
 	},
 	"coords_units": {},
 	"soil_depths": [0.05,0.185,0.415,0.81,1.485,2.63,4.58,7.905,13.57,23.23,39.705,67.8,115.705,198.1],

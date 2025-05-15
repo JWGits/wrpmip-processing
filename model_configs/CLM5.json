@@ -14,9 +14,15 @@
 	"has_otc": "True",
 	"has_sf": "True",
 	"subset_vars": [
+		"TSA",
+		"TV",
+		"SOILLIQ",
+		"AR",
+		"HR",
 		"GPP",
 		"ER",
 		"TSOI",
+		"SOILC_vr",
 		"TOTSOMC_1m",
 		"ALTMAX",
 		"ZWT_PERCH",
@@ -27,14 +33,23 @@
 		"landfrac"
 	],
 	"rename_subset": {
+		"TSA": "AirTemp",
+		"TV": "VegTemp",
+		"SOILLIQ": "SoilMoist",
+		"AR": "AutoResp",
+		"HR": "HeteroResp",
 		"ER": "TotalResp",
 		"TSOI": "SoilTemp",
-		"TOTSOMC_1m": "SoilC",
+		"SOILC_vr": "SoilC_Layers",
+		"TOTSOMC_1m": "SoilC_1m",
 		"levgrnd": "SoilDepth",
 		"ALTMAX": "ALT", 
 		"ZWT_PERCH": "WTD" 
 	},
 	"data_units": {
+		"AirTemp": {"scale_type": "add", "scale_value": -273.15, "units": "C"},
+		"VegTemp": {"scale_type": "add", "scale_value": -273.15, "units": "C"},
+		"SoilMoist": {"scale_type": "multiply", "scale_value": 1000, "units": "g/m2"},
 		"SoilTemp": {"scale_type": "add", "scale_value": -273.15, "units": "C"}
 	},
 	"coords_units": {},

@@ -1,0 +1,12 @@
+{
+	"model_name": "JULES",
+	"b1_dir": "/projects/warpmip/shared/model_outputs/JULES/unzipped/Baseline_1901-2000/", 
+	"b1_str": "_monthly_",
+	"b2_dir": "/projects/warpmip/shared/model_outputs/JULES/unzipped/Baseline_2000-2021/", 
+	"b2_str": "_daily_",
+	"otc_dir": "/projects/warpmip/shared/model_outputs/JULES/unzipped/OTC/",
+	"otc_str": "_daily_",
+	"sf_dir": "/projects/warpmip/shared/model_outputs/JULES/unzipped/Snow_fence/", 
+	"sf_str": "_daily_",
+	"soil_depths": [0.025,0.095062525,0.203730315,0.34856082,0.52797544,0.74081337,0.986161245,1.26326914,1.571502905,1.910314545,2.27922256,2.67779825,3.1056558,3.562444885,4.047845005,4.56156105,5.10331979,5.672867015,6.269965195,6.894391545]
+}

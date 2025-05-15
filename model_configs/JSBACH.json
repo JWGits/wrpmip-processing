@@ -14,21 +14,30 @@
 	"has_otc": "True",
 	"has_sf": "True",
 	"subset_vars": [
+		"ra",
+		"rh",
 		"gpp",
 		"TotalResp",
 		"soil_temperature",
+		"TotSoilCarb",
 		"thaw_depth",
 		"water_table"
 	],
 	"rename_subset": {
+		"ra": "AutoResp",
+		"rh": "HeteroResp",
 		"gpp": "GPP",
 		"soil_temperature": "SoilTemp",
 		"belowsurface": "SoilDepth",
+		"TotSoilCarb": "SoilC_Total",
 		"thaw_depth": "ALT",
 		"water_table": "WTD"
 	},
 	"data_units": {
 		"SoilTemp": {"scale_type": "add", "scale_value": -273.15, "units": "C"},
+		"SoilC_Total": {"scale_type": "multiply", "scale_value": 1000.0, "units": "gC/m^2"},
+		"AutoResp": {"scale_type": "multiply", "scale_value": 1000.0, "units": "gC/m^2/s"},
+		"HeteroResp": {"scale_type": "multiply", "scale_value": -1000.0, "units": "gC/m^2/s"},
 		"TotalResp": {"scale_type": "multiply", "scale_value": 1000.0, "units": "gC/m^2/s"},
 		"GPP": {"scale_type": "multiply", "scale_value": 1000.0, "units": "gC/m^2/s"},
 		"WTD": {"scale_type": "multiply", "scale_value": -1, "units": "m"}

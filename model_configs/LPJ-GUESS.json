@@ -15,18 +15,23 @@
 	"has_sf": "True",
 	"subset_vars": [
 		"GPP",
+		"AutoResp",
+		"HeteroResp",
 		"TotalResp",
 		"SoilTemp",
 		"thaw",
-		"SoilC"
+		"SoilC_Total"
 	],
 	"rename_subset": {
 		"thaw": "ALT"
 	},
 	"data_units": {
-		"SoilC": {"scale_type": "multiply", "scale_value": 1000.0, "units": "gC/m^2"},
+		"SoilC_Total": {"scale_type": "multiply", "scale_value": 1000.0, "units": "gC/m^2"},
+		"AutoResp": {"scale_type": "multiply", "scale_value": 0.00001157407, "units": "gC/m^2/s"},
+		"HeteroResp": {"scale_type": "multiply", "scale_value": 0.00001157407, "units": "gC/m^2/s"},
 		"TotalResp": {"scale_type": "multiply", "scale_value": 0.00001157407, "units": "gC/m^2/s"},
-		"GPP": {"scale_type": "multiply", "scale_value": 0.00001157407, "units": "gC/m^2/s"}
+		"GPP": {"scale_type": "multiply", "scale_value": 0.00001157407, "units": "gC/m^2/s"},
+		"ALT": {"scale_type": "multiply", "scale_value": 0.01, "units": "m"}
 	},
 	"coords_units": {},
 	"soil_depths": [0.05, 0.15, 0.25, 0.35, 0.45, 0.55, 0.65, 0.75, 0.85, 0.95, 1.05,1.15, 1.25, 1.35, 1.45]

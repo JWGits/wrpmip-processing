@@ -2,6 +2,7 @@
 	"lpj_output_dir": "/scratch/jw2636/processed_outputs/LPJ-GUESS-ML/",
 	"lpj2_output_dir": "/scratch/jw2636/processed_outputs/LPJ-GUESS/",
 	"elm_output_dir": "/scratch/jw2636/processed_outputs/ELM1-ECA/",
+	"jules_output_dir": "/scratch/jw2636/processed_outputs/JULES/",
 	"delete_dir": "/scratch/jw2636/for_deletion/",
 	"lpj_config_file": [
 		"/scratch/jw2636/wrpmip/python_codes/model_configs/LPJ-GUESS-ML-rechunk.json"
@@ -11,6 +12,9 @@
 	],
 	"elm_config_file": [
 		"/scratch/jw2636/wrpmip/python_codes/model_configs/ELM1-ECA-rechunk.json"
+	],
+	"jules_config_file": [
+		"/scratch/jw2636/wrpmip/python_codes/model_configs/JULES-rechunk.json"
 	],
 	"nc_read": {
 		"engine": "netcdf4",

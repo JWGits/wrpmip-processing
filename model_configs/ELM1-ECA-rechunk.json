@@ -14,25 +14,24 @@
 	"has_otc": "True",
 	"has_sf": "True",
 	"subset_vars": [
+		"RR",
+		"HR",
+		"HR_vr",
+		"TSA",
+		"TV",
+		"SOILLIQ",
+		"AR",
+		"HR",
 		"GPP",
 		"ER",
 		"TSOI",
 		"ALT",
 		"ZWT_PERCH",
+		"SOIL1N_vr",
+		"SOIL2N_vr",
+		"SOIL3N_vr",
 		"TOTSOMC",
+		"TOTSOMC_1m",
 		"TOTSOMN"
-	],
-	"rename_subset": {
-		"ER": "TotalResp",
-		"TSOI": "SoilTemp",
-		"levgrnd": "SoilDepth",
-		"ZWT_PERCH": "WTD",
-		"TOTSOMC": "SoilC", 
-		"TOTSOMN": "SoilN" 
-	},
-	"data_units": {
-		"SoilTemp": {"scale_type": "add", "scale_value": -273.15, "units": "C"}
-	},
-	"coords_units": {},
-	"soil_depths": [0.007100635, 0.027925, 0.06225858, 0.1188651, 0.2121934, 0.3660658, 0.6197585, 1.038027, 1.727635, 2.864607, 4.739157, 7.829766, 12.92532, 21.32647, 35.17762]
+	]
 }

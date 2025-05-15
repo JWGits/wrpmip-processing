@@ -1,0 +1,57 @@
+{
+	"model_name": "JULES",
+	"b1_dir": "/scratch/jw2636/processed_outputs/JULES/Baseline_1901-2000/",
+	"b1_str": "_monthly_",
+	"b2_dir": "/scratch/jw2636/processed_outputs/JULES/Baseline_2000-2021/",
+	"b2_str": "_daily_",
+	"otc_dir": "/scratch/jw2636/processed_outputs/JULES/OTC/",
+	"otc_str": "_daily_",
+	"sf_dir": "/scratch/jw2636/processed_outputs/JULES/Snow_fence/",
+	"sf_str": "_daily_",
+	"merge_type": "variables",
+	"has_b1": "True",
+	"has_b2": "True",
+	"has_otc": "True",
+	"has_sf": "True",
+	"subset_vars": [
+		"Tair",
+		"AutoResp",
+		"HeteroResp",
+		"TotalResp",
+		"GPP",
+		"NEE",
+		"SoilTemp",
+		"SoilMoist",
+		"ALT",
+		"WTD",
+		"TotSoilCarb",
+		"TotSoilN",
+		"SoilC_vr",
+		"SoilN_vr",
+		"CN_Total"
+	],
+	"rename_subset": {
+		"Tair": "AirTemp",
+		"TotSoilCarb":"SoilC_Total",
+		"TotSoilN":"SoilN_Total",
+		"SoilC_vr":"SoilC_Layers",
+		"SoilN_vr":"SoilC_Layers"
+	},
+	"data_units": {
+		"AirTemp": {"scale_type": "add", "scale_value": -273.15, "units": "C"},
+		"SoilTemp": {"scale_type": "add", "scale_value": -273.15, "units": "C"},
+		"AutoResp": {"scale_type": "multiply", "scale_value": 1000.0, "units": "gC/m^2/s"},
+		"HeteroResp": {"scale_type": "multiply", "scale_value": 1000.0, "units": "gC/m^2/s"},
+		"TotalResp": {"scale_type": "multiply", "scale_value": 1000.0, "units": "gC/m^2/s"},
+		"GPP": {"scale_type": "multiply", "scale_value": 1000.0, "units": "gC/m^2/s"},
+		"NEE": {"scale_type": "multiply", "scale_value": 1000.0, "units": "gC/m^2/s"},
+		"SoilMoist": {"scale_type": "multiply", "scale_value": 1000.0, "units": "gC/m^2"},
+		"SoilC_Total": {"scale_type": "multiply", "scale_value": 1000.0, "units": "gC/m^2"},
+		"SoilN_Total": {"scale_type": "multiply", "scale_value": 1000.0, "units": "gC/m^2"},
+		"SoilC_Layers": {"scale_type": "multiply", "scale_value": 1000.0, "units": "gC/m^2"},
+		"SoilN_Layers": {"scale_type": "multiply", "scale_value": 1000.0, "units": "gC/m^2"}
+	},
+	"coords_units": {
+	},
+	"soil_depths": [0.025,0.095062525,0.203730315,0.34856082,0.52797544,0.74081337,0.986161245,1.26326914,1.571502905,1.910314545,2.27922256,2.67779825,3.1056558,3.562444885,4.047845005,4.56156105,5.10331979,5.672867015,6.269965195,6.894391545]
+}

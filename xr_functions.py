@@ -11,6 +11,8 @@ import random
 import string
 from datetime import datetime, date
 from pathlib import Path
+import zarr
+from multiprocessing import Pool
 import netCDF4 as nc
 import xarray as xr
 import xesmf as xe
@@ -19,6 +21,8 @@ import cftime as cft
 import numpy as np
 from numpy.polynomial.polynomial import polyfit
 import pandas as pd
+import geopandas as gpd
+from shapely.geometry import Polygon, MultiPolygon
 from pandas import option_context
 from reportlab.lib import utils
 from reportlab.lib.units import inch
@@ -512,12 +516,40 @@ def gunzip_list(config):
     # return file info list
     return file_info  
 
+# create list of files to unzip that is passed to dask cluster
+def gunzip_dir_list(config):
+    # define empty list to hold file paths
+    file_info = []
+    # loop through all directories listed in config_unzip
+    for f_dir in config['dir']['in']:
+        # create list of netcdfs in each directory with .gz ending
+        files = sorted(glob.glob("{}*.gz".format(f_dir)))
+        #loop through individual files
+        for f in files: 
+            # check pull filename from globbed path to use as directory for unzipped files
+            if ('nhlat_monthly_1901_2000' in f) or ('1a' in f):
+                dir_name = 'Baseline_1901-2000'
+            elif ('standard_historical' in f) or ('1a' in f):
+                dir_name = 'Baseline_2000-2021'
+            elif ('temp1_historical' in f) or ('1a' in f):
+                dir_name = 'OTC'
+            elif ('ksnow0p5_historical' in f) or ('1a' in f):
+                dir_name = 'Snow_fence'
+            # create unziped file location
+            unzipped_dir = Path(config['dir']['out']+dir_name) 
+            # append to list of zip files to unzip
+            file_info.append([f, unzipped_dir])
+    # return file info list
+    return file_info  
+
 # copy to tmp from project folder and unzip to scratch
 def ungunzip_file(f, config):
     # pull file, tmp file, and unzipped file paths from input
     src_file = f[0]
     unzip_dir = f[1]
-    unzip_file = Path(unzip_dir+str(Path(src_file).stem))
+    unzip_file = Path(str(unzip_dir)+'/'+str(Path(src_file).stem))
+    # make directory for output files
+    Path(unzip_dir).mkdir(parents=True, exist_ok=True)
     # unzip temp file to final scratch destination
     with gzip.open(src_file, 'rb') as f_in:
         with open(unzip_file, 'wb') as f_out:
@@ -3300,9 +3332,9 @@ def regional_simulation_files(input_list):
     # read all CRUJRA input file names from reanalysis directory
     dir_name = sim_type + '_dir'
     sim_str = sim_type + '_str'
-    if config['model_name'] not in ['ecosys','ELM1-ECA','ORCHIDEE-MICT-teb']:
+    if config['model_name'] not in ['ecosys','ELM1-ECA','ORCHIDEE-MICT-teb','JULES']:
         sim_files = sorted(glob.glob("{}*{}*.nc".format(config[dir_name], config[sim_str])))
-    elif config['model_name'] in ['ELM1-ECA']:
+    elif config['model_name'] in ['ELM1-ECA','JULES']:
         sim_files = sorted(glob.glob("{}*{}*.zarr".format(config[dir_name], config[sim_str])))
     elif config['model_name'] in ['ecosys']:
         # deal with non-standard file and variable chunking in ecosys
@@ -3311,7 +3343,9 @@ def regional_simulation_files(input_list):
         sim_files2 = sorted(glob.glob("{}*{}*.nc".format(config[dir_name], 'soil_temp1')))
         sim_files3 = sorted(glob.glob("{}*{}*.nc".format(config[dir_name], 'soil_temp2')))
         sim_files4 = sorted(glob.glob("{}*{}*.nc".format(config[dir_name], 'daily_water')))
-        sim_files = [sim_files1, sim_files2, sim_files3, sim_files4]
+        sim_files5 = sorted(glob.glob("{}*{}*.nc".format(config[dir_name], 'SOC1')))
+        sim_files6 = sorted(glob.glob("{}*{}*.nc".format(config[dir_name], 'SOC2')))
+        sim_files = [sim_files1, sim_files2, sim_files3, sim_files4, sim_files5, sim_files6]
     elif config['model_name'] in ['ORCHIDEE-MICT-teb']:
         sim_files1 = sorted(glob.glob("{}*{}*.nc".format(config[dir_name], 'sechiba')))
         sim_files2 = sorted(glob.glob("{}*{}*.nc".format(config[dir_name], 'stomate')))
@@ -3353,6 +3387,213 @@ def list_lpjguessml(input_list):
         print(file_list, file=pf)
     return file_list
 
+# rechunk JULES
+def list_jules_daily(input_list):
+    # read config file
+    config = input_list[0]
+    # read the simulation type
+    sim_type = input_list[1]
+    # read all CRUJRA input file names from reanalysis directory
+    dir_name = sim_type + '_dir'
+    sim_str = sim_type + '_str'
+    sim_dir = Path(config[dir_name]).stem
+    # make output dir
+    Path(config['output_dir'] + sim_dir).mkdir(parents=True, exist_ok=True)
+    Path(config['output_dir'] + sim_dir).chmod(0o762)
+    with open(Path(config['output_dir'] + 'debug_' + config['model_name'] + '_' + sim_type + '.txt'), 'w') as pf:
+        print('sim_dir: ', file=pf)
+        print(sim_dir, file=pf)
+    sim_files = sorted(glob.glob("{}*{}*.nc".format(config[dir_name], config[sim_str])))
+    if sim_type in ['b2','otc','sf']:
+        # identify unique variable string:
+        var_unique = []
+        for i in range(len(sim_files)):
+            var_unique.append("_".join(str(Path(sim_files[i]).name).split("_")[6:8]))
+        var_unique = list(set(var_unique))
+        # for each unique variable pull
+        file_string = "_".join(str(Path(sim_files[0]).name).split("_")[0:6])
+        new_sim_files = []
+        for var in var_unique:
+            output_file = config['output_dir'] + sim_dir + '/' + file_string + '_' + var + '_daily_2000_2022.zarr'
+            files_to_combine = [item for item in sim_files if var in item]
+            file_subset = [item for item in sim_files if var not in item]
+            if var == 'SoilTemp_nhlat':
+                files_to_combine = [item for item in files_to_combine if 'top5cm' not in item]
+            if var in ['ALT_sthf','Fdepth_sthf']:
+                continue
+            new_sim_files.append([files_to_combine, output_file, sim_type])
+    else:
+        new_sim_files = []
+    #sim_files = [x for x in sim_files if 'Soil' in x]
+    with open(Path(config['output_dir'] + 'debug_' + config['model_name'] + '_' + sim_type + '.txt'), 'a') as pf:
+        print('sim files: ', file=pf)
+        print(new_sim_files, file=pf)
+    return new_sim_files
+
+# rechunk JULES
+def list_jules_monthly(input_list):
+    # read config file
+    config = input_list[0]
+    # read the simulation type
+    sim_type = input_list[1]
+    # read all CRUJRA input file names from reanalysis directory
+    dir_name = sim_type + '_dir'
+    sim_str = sim_type + '_str'
+    sim_dir = Path(config[dir_name]).stem
+    # make output dir
+    Path(config['output_dir'] + sim_dir).mkdir(parents=True, exist_ok=True)
+    Path(config['output_dir'] + sim_dir).chmod(0o762)
+    with open(Path(config['output_dir'] + 'debug_' + config['model_name'] + '_' + sim_type + '_monthly.txt'), 'w') as pf:
+        print('sim_dir: ', file=pf)
+        print(sim_dir, file=pf)
+    monthly_files = sorted(glob.glob("{}*{}*.nc".format(config[dir_name], '_monthly_')))
+    #sim_files = [x for x in sim_files if 'Soil' in x]
+    file_list = []
+    remove_list = ['WTD_nhlat_monthly','TVeg_nhlat_monthly','TotalResp_nhlat_monthly','SWE_nhlat_monthly', \
+                   'SoilTemp_nhlat_monthly','SoilMoist_nhlat_monthly','SoilIce_nhlat_monthly','SnowDepth_nhlat_monthly', \
+                   'Qs_nhlat_monthly','Qsb_nhlat_monthly','Qle_nhlat_monthly','Qh_nhlat_monthly','NPP_nhlat_monthly','Nmineral_nhlat_monthly',\
+                   'NEP_nhlat_monthly','NEE_nhlat_monthly','LAI_nhlat_monthly','HeteroResp_vr_nhlat_monthly', \
+                   'GPP_nhlat_monthly','fPAR_nhlat_monthly','Fdepth_sthf_nhlat_monthly','Fdepth_nhlat_monthly', \
+                   'CLitter_nhlat_monthly','AutoResp_nhlat_monthly','ALT_sthf_nhlat_monthly','ALT_nhlat_monthly']
+    for f in monthly_files:
+        file_name = Path(f).stem
+        if sim_type in ['b2','otc','sf']:
+            output_file = config['output_dir'] + sim_dir + '/' + file_name.replace('monthly','daily') + '.zarr'
+            if any(item in f for item in remove_list):
+                continue
+        else:
+            output_file = config['output_dir'] + sim_dir + '/' + file_name + '.zarr'
+            if any(item in f for item in ['ALT_sthf','Fdepth_sthf']):
+                continue
+        file_list.append([f, output_file, sim_type])
+    with open(Path(config['output_dir'] + 'debug_' + config['model_name'] + '_' + sim_type + '_monthly.txt'), 'a') as pf:
+        print(file_list, file=pf)
+    return file_list
+
+def rechunk_jules_daily(input_list, config):
+    input_files = input_list[0]
+    output_file = input_list[1]
+    sim_type = input_list[2]
+    # open and combine files
+    def preprocess_jules_rechunk(ds, config):
+        ds = xr.decode_cf(ds, use_cftime=True)
+        if 'bnds' in ds.dims.keys():
+            ds = ds.drop_dims('bnds')
+        if 'month' in ds.coords:
+            ds = ds.reset_coords('month', drop=True)
+        ds = ds.sortby(['time'])
+        with open(Path(config['output_dir'] + 'debug_' + config['model_name'] + '_rechunk_daily.txt'), 'a') as pf:
+            print(ds, file=pf)
+        return ds
+    partial_jules_rechunk = partial(preprocess_jules_rechunk, config=config)
+    with dask.config.set(**{'array.slicing.split_large_chunks': False}):
+        with xr.open_mfdataset(input_files, parallel=True, engine=config['nc_read']['engine'], chunks={'time': 73}, preprocess=partial_jules_rechunk, mask_and_scale=True, decode_times=True) as ds:
+            with open(Path(config['output_dir'] + 'debug_' + config['model_name'] + '_rechunk_daily.txt'), 'a') as pf:
+                print('duplicated times: ', file=pf)
+                print(ds.data_vars, file=pf)
+                print(sum(ds.time.to_index().duplicated()), file=pf)
+            if sum(ds.time.to_index().duplicated()) > 0:
+                ds = ds.drop_duplicates('time')
+            # change calendar to no_leap
+            ds = ds.convert_calendar('noleap', use_cftime=True)
+            ds['time'] = [t - xr.coding.cftime_offsets.Hour(12) for t in ds['time'].values]
+            ds = ds.reindex({'time': xr.cftime_range(start='2000-01-01 00:00:00', end='2021-12-31 00:00:00', freq='D', calendar='noleap')})
+            with open(Path(config['output_dir'] + 'debug_' + config['model_name'] + '_rechunk_daily.txt'), 'a') as pf:
+                print(ds, file=pf)
+            # output to zarr
+            for var in ds:
+                try:
+                    del ds[var].encoding['chunks']
+                except:
+                    pass
+                try:
+                    del ds[var].encoding['_FillValue']
+                except:
+                    pass
+                try:
+                    del ds[var].attrs['_FillValue']
+                except:
+                    pass
+            if 'depth' in ds.dims.keys():
+                ds = ds.rename({'depth': 'SoilDepth'})
+                chunk_dict = {'time': 73, 'SoilDepth': 20, 'lat': 62, 'lon': 720}
+                ds = ds.chunk(chunk_dict)
+            elif 'sclayer' in ds.dims.keys():
+                ds = ds.rename({'sclayer': 'SoilDepth'})
+                chunk_dict = {'time': 73, 'SoilDepth': 20, 'lat': 62, 'lon': 720}
+                ds = ds.chunk(chunk_dict)
+            else:
+                chunk_dict = {'time': 73, 'lat': 62, 'lon': 720}
+                ds = ds.chunk(chunk_dict)
+            ds = ds.transpose('time', 'SoilDepth', 'lat', 'lon', missing_dims='ignore')
+            if 'SoilDepth' in ds.dims.keys():
+                ds = ds.assign_coords({'SoilDepth': config['soil_depths']})
+            compress = Zstd(level=6)
+            encode = {var: {'_FillValue': np.nan, 'compressor': compress} for var in ds.data_vars}
+            ds.to_zarr(output_file, encoding=encode, mode="w")
+            with open(Path(config['output_dir'] + 'debug_' + config['model_name'] + '_rechunk_daily.txt'), 'a') as pf:
+                print(ds.data_vars, file=pf)
+                print('Finished with above dataset', file=pf)
+
+def rechunk_jules_monthly(input_list, config):
+    input_file = input_list[0]
+    output_file = input_list[1]
+    sim_type = input_list[2]
+    # open and combine files
+    with dask.config.set(**{'array.slicing.split_large_chunks': False}):
+        with xr.open_dataset(input_file, engine=config['nc_read']['engine'], chunks={'time': 12}, mask_and_scale=True, decode_times=True) as ds:
+            # change calendar to no_leap
+            ds = ds.convert_calendar('noleap', use_cftime=True)
+            ds['time'] = [t - xr.coding.cftime_offsets.Hour(12) for t in ds['time'].values]
+            # sum Cpools
+            if 'scpool' in ds.dims.keys():
+                ds = ds.sum(dim='scpool',skipna=True)
+            # remove extraneous dimensions/coords
+            if 'bnds' in ds.dims.keys():
+                ds = ds.drop_dims('bnds')
+            if 'month' in ds.coords:
+                ds = ds.reset_coords('month', drop=True)
+            # for all but b1 change to daily data
+            if sim_type in ['b2','otc','sf']:
+                ds = ds.resample(time='1D').ffill()
+                ds = ds.reindex({'time': xr.cftime_range(start='2000-01-01 00:00:00', end='2021-12-31 00:00:00', freq='D', calendar='noleap')})
+            with open(Path(config['output_dir'] + 'debug_' + config['model_name'] + '_rechunk_monthly.txt'), 'a') as pf:
+                print(ds, file=pf)
+            # output to zarr
+            for var in ds:
+                try:
+                    del ds[var].encoding['chunks']
+                except:
+                    pass
+                try:
+                    del ds[var].encoding['_FillValue']
+                except:
+                    pass
+                try:
+                    del ds[var].attrs['_FillValue']
+                except:
+                    pass
+            if 'depth' in ds.dims.keys():
+                ds = ds.rename({'depth': 'SoilDepth'})
+                chunk_dict = {'time': 73, 'SoilDepth': 20, 'lat': 62, 'lon': 720}
+                ds = ds.chunk(chunk_dict)
+            elif 'sclayer' in ds.dims.keys():
+                ds = ds.rename({'sclayer': 'SoilDepth'})
+                chunk_dict = {'time': 73, 'SoilDepth': 20, 'lat': 62, 'lon': 720}
+                ds = ds.chunk(chunk_dict)
+            else:
+                chunk_dict = {'time': 73, 'lat': 62, 'lon': 720}
+                ds = ds.chunk(chunk_dict)
+            ds = ds.transpose('time', 'SoilDepth', 'lat', 'lon', missing_dims='ignore')
+            if 'SoilDepth' in ds.dims.keys():
+                ds = ds.assign_coords({'SoilDepth': config['soil_depths']})
+            compress = Zstd(level=6)
+            encode = {var: {'_FillValue': np.nan, 'compressor': compress} for var in ds.data_vars}
+            ds.to_zarr(output_file, encoding=encode, mode="w")
+            with open(Path(config['output_dir'] + 'debug_' + config['model_name'] + '_rechunk_monthly.txt'), 'a') as pf:
+                print(ds.data_vars, file=pf)
+                print('Finished with above dataset', file=pf)
+
 def rechunk_elmeca(input_list):
     # read config file
     config = input_list[0]
@@ -3375,7 +3616,7 @@ def rechunk_elmeca(input_list):
                 yield lst[i:i + n]
         if sim_type == 'b1':
             chunk_read = config['nc_read']['b1_chunks']
-            zarr_chunk_out = 144
+            zarr_chunk_out = 73
         else:
             chunk_read = config['nc_read']['b2_chunks']
             zarr_chunk_out = 73
@@ -3393,6 +3634,41 @@ def rechunk_elmeca(input_list):
             with xr.open_mfdataset(file_chunk, parallel=True, engine=engine, chunks=chunk_read, preprocess=partial_time, **kwargs) as ds_tmp:
                 with open(Path(config['output_dir'] + 'debug_elmeca.txt'), 'a') as pf:
                     print(ds_tmp, file=pf)
+                ######## deal with levdcmp issue
+                # identify variables with problematic dim
+                problem_dim = 'levdcmp'
+                matching_variables = []
+                for var_name, data_array in ds_tmp.data_vars.items():
+                    if problem_dim in data_array.dims:
+                        matching_variables.append(var_name)
+                with open(Path(config['output_dir'] + 'debug_elmeca.txt'), 'a') as pf:
+                    print("problem variables:", file=pf)
+                    print(matching_variables, file=pf)
+                # subset out these variables
+                ds_problem_vars = ds_tmp[matching_variables]
+                with open(Path(config['output_dir'] + 'debug_elmeca.txt'), 'a') as pf:
+                    print("problem ds:", file=pf)
+                    print(ds_problem_vars, file=pf)
+                # remove problem variables from dataset
+                ds_tmp = ds_tmp.drop_dims(problem_dim)
+                with open(Path(config['output_dir'] + 'debug_elmeca.txt'), 'a') as pf:
+                    print("cleaned ds:", file=pf)
+                    print(ds_tmp, file=pf)
+                # fix dimension name of problem variables (currently a dataset b/c SOIL[1N,2N,3N]_vr variables)
+                ds_problem_vars = ds_problem_vars.rename({"levdcmp":"levgrnd"})
+                with open(Path(config['output_dir'] + 'debug_elmeca.txt'), 'a') as pf:
+                    print("changed levdcmp to levgrnd ds:", file=pf)
+                    print(ds_problem_vars, file=pf)
+                ds_problem_vars = ds_problem_vars.assign_coords({"levgrnd": ds_tmp.coords['levgrnd'].values})
+                with open(Path(config['output_dir'] + 'debug_elmeca.txt'), 'a') as pf:
+                    print("replaced levdcmp values with lebgrnd values ds:", file=pf)
+                    print(ds_problem_vars, file=pf)
+                # add variables back to dataset
+                ds_tmp = ds_tmp.merge(ds_problem_vars)
+                with open(Path(config['output_dir'] + 'debug_elmeca.txt'), 'a') as pf:
+                    print("merged ds:", file=pf)
+                    print(ds_tmp, file=pf)
+                ########
                 # create file name for output
                 file_out = Path(config['output_dir']+ sim_type +'/elm_eca_' + sim_type + '_' + str(year_iterator).zfill(2)+'.zarr')
                 # set zarr compression and encoding
@@ -3426,6 +3702,26 @@ def rechunk_elmeca(input_list):
             # iterate to next year for file names
             year_iterator += 1
 
+def elm_zstore_list(dir_in, dir_out):
+    zarr_stores = sorted(glob.glob("{}*.zarr".format(dir_in)))
+    zarr_list = []
+    for zstore_in in zarr_stores:
+        f_parts = str(Path(zstore_in).stem).split('_')
+        zstore_out = dir_out + '/' + '_'.join([f_parts[0],f_parts[1],'b1',f_parts[3]]) + '.zarr'
+        zarr_list.append([zstore_in,zstore_out])
+    return zarr_list
+
+def zstore_copy(input_list):
+    z_in = input_list[0]
+    z_out = input_list[1]
+    output_dir = Path(z_out).parent
+    if not Path(output_dir).is_dir():
+        Path(output_dir).mkdir(parents=True, exist_ok=True)
+        Path(output_dir).chmod(0o762)
+    z1 = zarr.DirectoryStore(z_in)
+    z2 = zarr.DirectoryStore(z_out)
+    zarr.copy_store(z1, z2)
+    
 def rechunk_lpjguessml(input_list, config):
     input_file = input_list[0]
     output_file = input_list[1]
@@ -3437,10 +3733,10 @@ def rechunk_lpjguessml(input_list, config):
         if 'month' in input_file:
             if 'nsoil' in ds.dims.keys():
                 ds = ds.rename({'nsoil': 'SoilDepth'})
-                chunk_dict = {'time': 144, 'SoilDepth': 15, 'lat': 120, 'lon': 720}
+                chunk_dict = {'time': 73, 'SoilDepth': 15, 'lat': 120, 'lon': 720}
                 ds = ds.chunk(chunk_dict)
             else:
-                chunk_dict = {'time': 144, 'lat': 120, 'lon': 720}
+                chunk_dict = {'time': 73, 'lat': 120, 'lon': 720}
                 ds = ds.chunk(chunk_dict)
         else:
             if 'nsoil' in ds.dims.keys():
@@ -3479,23 +3775,23 @@ def rechunk_lpjguess(input_list, config):
     input_file = input_list[0]
     output_file = input_list[1]
     with open(Path(config['output_dir'] + 'debug_lpjguess.txt'), 'w') as pf:
-        print('LPJ-GUESS-ML rechunking...', file=pf)
+        print('LPJ-GUESS rechunking...', file=pf)
     with dask.config.set(**{'array.slicing.split_large_chunks': False}):
         ds = xr.open_dataset(input_file, engine=config['nc_read']['engine'], mask_and_scale=True, decode_times=False)
         #ds = ds.rename({'latitude': 'lat', 'longitude': 'lon'})
         if 'month' in input_file:
             if 'nsoil' in ds.dims.keys():
                 ds = ds.rename({'nsoil': 'SoilDepth'})
-                chunk_dict = {'time': 144, 'SoilDepth': 15, 'lat': 108, 'lon': 675}
+                chunk_dict = {'time': 73, 'SoilDepth': 15, 'lat': 108, 'lon': 675}
                 ds = ds.chunk(chunk_dict)
             elif 'nsnow' in ds.dims.keys():
-                chunk_dict = {'time': 144, 'lat': 108, 'lon': 675, 'nsnow': 5}
+                chunk_dict = {'time': 73, 'lat': 108, 'lon': 675, 'nsnow': 5}
                 ds = ds.chunk(chunk_dict)
             elif 'nsompool' in ds.dims.keys():
-                chunk_dict = {'time': 144, 'lat': 108, 'lon': 675, 'nsompool': 11}
+                chunk_dict = {'time': 73, 'lat': 108, 'lon': 675, 'nsompool': 11}
                 ds = ds.chunk(chunk_dict)
             else:
-                chunk_dict = {'time': 144, 'lat': 108, 'lon': 675}
+                chunk_dict = {'time': 73, 'lat': 108, 'lon': 675}
                 ds = ds.chunk(chunk_dict)
         elif 'year' in input_file:
             if 'nsoil' in ds.dims.keys():
@@ -3550,6 +3846,13 @@ def rechunk_lpjguess(input_list, config):
         except:
             pass
     
+# preprocess files that are parsed by variable
+def preprocess_JULES(ds, config, sim_type):
+    with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
+        print('opening' + ds.encoding['source'], file=pf)
+        print(ds, file=pf)
+    return ds
+
 # function to fix timesteps in preprocess step and subset to variables of interest
 def preprocess_JSBACH(ds, config, sim_type):
     dsc = ds.copy(deep=True)
@@ -3581,7 +3884,7 @@ def preprocess_JSBACH(ds, config, sim_type):
         with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
             print('ds after reindex:', file=pf)
             print(dsc, file=pf)
-        dsc = dsc.resample(time='1D').interpolate('linear')
+        dsc = dsc.resample(time='1D').ffill() #interpolate('linear')
         with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
             print('ds after resample:', file=pf)
             print(dsc, file=pf)
@@ -3595,11 +3898,6 @@ def preprocess_JSBACH(ds, config, sim_type):
         dsc.time.attrs['axis'] = 'T'
         u, c = np.unique(dsc.time.values, return_counts=True)
         dup = u[c > 1] 
-    # replace attributes that are lost from the coord assignment step
-    #ds.time.attrs['standard_name'] = 'time'
-    #ds.time.attrs['units'] = 'days since 1998-01-01 00:00:00'
-    #ds.time.attrs['calendar'] = 'proleptic_gregorian'
-    #ds.time.attrs['axis'] = 'T'
     # reverse lat index
     dsc = dsc.sortby('lat', ascending=True) #reindex(lat=ds.lat[::-1])
     with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
@@ -3631,25 +3929,12 @@ def preprocess_ecosys(ds, config, sim_type):
     dsc = dsc.rename({'doy': 'time'})
     # set coord values to time index and set attributes
     dsc.coords['time'] = ds_time
-    #dsc['time'].attrs['long_name'] = "time"
-    #dsc['time'].attrs['long_name'] = "time"
-    #dsc['time'].attrs['units'] = 'days since 1901-01-01 00:00:00'
-    # calculate TotalResp and remake attributes
-    if 'ECO_RH' in dsc.data_vars:
-        dsc['TotalResp'] = dsc['ECO_RH'] + (dsc['ECO_GPP'] - dsc['ECO_NPP'])
-        dsc['TotalResp'].attrs['long_name'] = 'Autotrophic + heterotrophic respiration'
-        dsc['TotalResp'].attrs['units'] = 'gC m-2 day-1'
     # reorder lat
     dsc = dsc.sortby('lat', ascending=True)
     # change to noleap calendar to remove leapdays
     dsc = dsc.convert_calendar('noleap', use_cftime=True)
     # return preprocessed file to open_mfdataset
     return dsc
-
-# preprocess files that are parsed by time
-def preprocess_time(ds, config):
-    var_keep = config['subset_vars']
-    return ds[var_keep]
 
 def preprocess_ORCHIDEE_MICT(ds, config, sim_type):
     # copy the dataset
@@ -3687,6 +3972,8 @@ def preprocess_ORCHIDEE_MICT_teb(ds, config, sim_type):
         dsc = dsc.rename({'solth':'SoilDepth', 'time_counter':'time'})
         # subset sechiba
         dsc = dsc[config['subset_sechiba']]
+        # take mean soil temp across PFTs
+        dsc['ptn'] = dsc['ptn'].mean(dim='veget', keep_attrs=True, skipna=True)
     elif 'stomate' in dsc.encoding['source']:
         # rename ndeep to SoilDepth
         try:
@@ -3699,14 +3986,18 @@ def preprocess_ORCHIDEE_MICT_teb(ds, config, sim_type):
                 print(dsc.encoding['source'], file=pf)
         # subset stomate
         dsc = dsc[config['subset_stomate']]
+        # tame mean of ALT depth across PFTs
+        dsc['alt'] = dsc['alt'].mean(dim='veget', keep_attrs=True, skipna=True)
         # remove chunking
         dsc = dsc.chunk({'time': -1})
     # assign same soil depths as other ORCHIDEE-MICT outputs, stomate has integers, sechiba has slightly diff values from other submission
     dsc = dsc.assign_coords({'SoilDepth': config['soil_depths']})
-    # deal with pfts, first pass by mean
-    dsc = dsc.mean(dim='veget', keep_attrs=True, skipna=True)
+    # take sum of carbon fluxes from all PFTs
+    dsc = dsc.sum(dim='veget', keep_attrs=True, skipna=True)
     # change time from seconds since 2002-01-01 00:00:00 to cftime
     dsc = xr.decode_cf(dsc, use_cftime=True)
+    if 'time_centered' in ds.coords:
+        dsc = dsc.drop_vars(['time_centered'])
     # forward fill month start values to all days in month
     #dsc = dsc.resample(time='1D').ffill() 
     # print updated data to file for debugging
@@ -3762,19 +4053,32 @@ def preprocess_LPJ_GUESS(ds, config, sim_type):
     # check for snowice and simulation 1d to correct nsnow values
     if ('snowice' in dsc.encoding['source']) and ('1d' in dsc.encoding['source']):
         dsc = dsc.assign_coords({'nsnow': np.arange(0,5)})
+    if len(dsc.lat.values) > 108:
+        dsc = dsc.drop_sel(lat = 67.265625)
     # print file info for debugging
     with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
         print(dsc, file=pf)
+        with xr.set_options(display_max_rows=200, display_style="text"): 
+            print('lat:', file=pf)
+            print(dsc.lat.values, file=pf)
+        print('time:', file=pf)
+        print(dsc.time.values, file=pf)
         print('encoding for fillvalue', file=pf)
         for var in dsc.data_vars:
             print('variable: ' + var, file=pf)
-            print(dsc[var].encoding['_FillValue'], file=pf)
+            print(dsc[var].encoding, file=pf)
+            print(dsc[var].attrs, file=pf)
     return dsc
 
 # preprocess files that are parsed by variable
 def preprocess_var(ds, config):
     # return only subset variables of interest from config file
     return ds
+
+# preprocess files that are parsed by time
+def preprocess_time(ds, config):
+    var_keep = config['subset_vars']
+    return ds[var_keep]
 
 # merge files depending on simulation outputs
 def process_simulation_files(input_list, top_config):
@@ -3793,17 +4097,18 @@ def process_simulation_files(input_list, top_config):
                 print(input_list, file=pf)
             if sim_type == 'b1':
                 chunk_read = config['nc_read']['b1_chunks']
-                zarr_chunk_out = 144
+                zarr_chunk_out = 73
             else:
                 chunk_read = config['nc_read']['b2_chunks']
-                zarr_chunk_out = 365
-            if config['model_name'] in ['ORCHIDEE-MICT-teb','LPJ-wsl']:
-                chunk_read = {'time': 12}
-                zarr_chunk_out = 12
+                zarr_chunk_out = 73
+            #if config['model_name'] in ['ORCHIDEE-MICT-teb']:
+            #    chunk_read = {'time': 12}
+            #    zarr_chunk_out = 12
             # assign engine used to open netcdf files from config
             engine = config['nc_read']['engine']
             # set kwargs to mask_and_scale=True and decode_times=False for individual files passed to open_mfdataset
             kwargs = {"mask_and_scale": True, "decode_times": False}
+            zarr_kwargs = dict(decode_cf=True, mask_and_scale=True, decode_times=False)
             # match the combination type with how files should be merged
             match config['merge_type']:
                 case 'time':
@@ -3812,35 +4117,26 @@ def process_simulation_files(input_list, top_config):
                     if config['model_name'] == 'UVic-ESCM':
                         # open using mfdataset which will auto merge variables, but preprocess away incorrect time indexes 
                         ds = xr.open_mfdataset(sim_files, parallel=True, engine=engine, chunks=chunk_read, preprocess=partial_time, **kwargs)
-                        # # extract fill value from ra/rh
-                        # fill_value = ds['L_veggpp'].attrs['FillValue']
-                        # # remove all fill values before calculating TotalResp
-                        # ds['L_veggpp'] = ds['L_veggpp'].where(ds['L_veggpp'] != fill_value)
-                        # ds['L_vegnpp'] = ds['L_vegnpp'].where(ds['L_vegnpp'] != fill_value)
-                        # ds['L_soilresp'] = ds['L_soilresp'].where(ds['L_soilresp'] != fill_value)
                         # # calculate auto_resp
-                        ds['auto_resp'] = ds['L_veggpp'] - ds['L_vegnpp']
+                        ds['AutoResp'] = ds['L_veggpp'] - ds['L_vegnpp']
                         # sum pfts to remove pft dimension
                         ds = ds.sum(dim='pft', keep_attrs=True, skipna=True)
                         # calculate TotalResp as auto + hetero resp
-                        ds['TotalResp'] = ds['auto_resp'] + ds['L_soilresp']
-                        # ds['TotalResp'].encoding['_FillValue'] = fill_value
-                        # ds['L_gndtemp'].encoding['_FillValue'] = fill_value
+                        ds['TotalResp'] = ds['AutoResp'] + ds['L_soilresp']
                         # mask Uvic
                         ds = ds.where(ds.G_mskt < 1)
                         # drop vars/mask
-                        ds = ds.drop_vars(['L_vegnpp','L_soilresp','auto_resp','G_mskt'])
+                        ds = ds.drop_vars(['L_vegnpp','G_mskt'])
                         with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
                             print(ds, file=pf)
                     elif config['model_name'] == 'ELM1-ECA':
                         # open zarr files
-                        zarr_kwargs = dict(decode_cf=True, decode_times=False)
-                        ds = xr.open_mfdataset(sim_files, parallel=True, engine="zarr", **zarr_kwargs)
+                        ds = xr.open_mfdataset(sim_files, parallel=True, engine="zarr", preprocess=partial_time, **zarr_kwargs)
                         # check files
                         with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
                             print(ds, file=pf)
                         # calculate CN
-                        ds['CN'] = ds['TOTSOMC'] / ds['TOTSOMN']
+                        ds['CN_Total'] = ds['TOTSOMC'] / ds['TOTSOMN']
                     elif config['model_name'] == 'ORCHIDEE-MICT':
                         partial_ORCHIDEE_MICT = partial(preprocess_ORCHIDEE_MICT, config=config, sim_type=sim_type)
                         ds = xr.open_mfdataset(sim_files, parallel=True, engine=engine, chunks=chunk_read, preprocess=partial_ORCHIDEE_MICT, **kwargs)
@@ -3857,7 +4153,7 @@ def process_simulation_files(input_list, top_config):
                         # calculate TotalResp
                         ds['TotalResp'] = ds['rh'] + ds['ra']
                         # remove ra/rh
-                        ds = ds.drop_vars(['ra','rh'])
+                        #ds = ds.drop_vars(['ra','rh'])
                         # debug dataset
                         with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
                             print('combined dataset: ', file=pf)
@@ -3871,13 +4167,52 @@ def process_simulation_files(input_list, top_config):
                             clm5_landmask = ds[output_land_vars]
                             clm5_land_file = config['output_dir']+'zarr_output/clm5_landmask.nc'
                             clm5_landmask.to_netcdf(clm5_land_file, mode="w", format=config['nc_write']['format'], engine=config['nc_write']['engine'])
-                        # drop land mask
+                        # drop land mask and old dims
                         ds = ds.drop_vars(output_land_vars)
+                        # pull each var with levsoi, reindex/rename to levgrnd values, assign back to dasaset
+                        for var in ds.data_vars:
+                            if 'levsoi' in ds[var].dims:
+                                tmp_var = ds[var].copy(deep=True)
+                                tmp_var = tmp_var.reindex({'levsoi': ds.levgrnd.values})
+                                tmp_var = tmp_var.rename({'levsoi': 'levgrnd'})
+                                ds[var] = tmp_var
+                        ds = ds.drop_dims(['levsoi'])
+                    elif config['model_name'] == 'CLM5-ExIce':
+                        # open using mfdataset and merge using combine_by_coords
+                        ds = xr.open_mfdataset(sim_files, parallel=True, engine=engine, chunks=chunk_read, preprocess=partial_time, **kwargs)
+                        # pull each var with levsoi, reindex/rename to levgrnd values, assign back to dasaset
+                        for var in ds.data_vars:
+                            if 'levsoi' in ds[var].dims:
+                                tmp_var = ds[var].copy(deep=True)
+                                tmp_var = tmp_var.reindex({'levsoi': ds.levgrnd.values})
+                                tmp_var = tmp_var.rename({'levsoi': 'levgrnd'})
+                                ds[var] = tmp_var
+                        # drop land mask
+                        ds = ds.drop_dims(['levsoi'])
                     else:
                         # open using mfdataset and merge using combine_by_coords
                         ds = xr.open_mfdataset(sim_files, parallel=True, engine=engine, chunks=chunk_read, preprocess=partial_time, **kwargs)
                 case 'variables':
-                    if config['model_name'] == 'JSBACH':
+                    if config['model_name'] == 'JULES':
+                        # create functools.partial function to pass subset variable through to preprocess
+                        partial_JULES = partial(preprocess_JULES, config=config, sim_type=sim_type) 
+                        # open using mfdataset which will auto merge variables, but preprocess away incorrect time indexes 
+                        ds = xr.open_mfdataset(sim_files, parallel=True, engine="zarr", chunks='auto', preprocess=partial_JULES, **zarr_kwargs)
+                        # # subset to variables of interest
+                        if sim_type in ['b1']:
+                            subset_vars = [item for item in config['subset_vars'] if item not in ['TotSoilCarb','SoilMoist','TotSoilN','SoilC_vr','SoilN_vr','CN']]
+                        else:
+                            #ds['SoilC'] = ds['SoilC_vr'].isel(SoilDepth = list(range(0,7))).integrate('SoilDepth')
+                            #ds['SoilN'] = ds['SoilN_vr'].isel(SoilDepth = list(range(0,7))).integrate('SoilDepth')
+                            ds['CN_Total'] = ds['TotSoilCarb'] / ds['TotSoilN']
+                            subset_vars = config['subset_vars']
+                        if sim_type in ['otc','sf']: 
+                            ds['NEE'] = ds['NEE'].sum(dim='SoilDepth')
+                        with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
+                            print('open_mfdataset completed', file=pf)
+                            print(ds, file=pf)
+                        ds = ds[subset_vars]
+                    elif config['model_name'] == 'JSBACH':
                         # create functools.partial function to pass subset variable through to preprocess
                         partial_JSBACH = partial(preprocess_JSBACH, config=config, sim_type=sim_type) 
                         # open using mfdataset which will auto merge variables, but preprocess away incorrect time indexes 
@@ -3885,32 +4220,6 @@ def process_simulation_files(input_list, top_config):
                         with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
                             print('open_mfdataset completed', file=pf)
                             print(ds, file=pf)
-                        # # extract fill value from ra/rh
-                        # fill_value = ds['ra'].attrs['_FillValue']
-                        # d_type = ds['ra'].encoding['dtype']
-                        # orig_shape = ds['ra'].encoding['original_shape']
-                        # # remove all fill values before calculating TotalResp
-                        # ds['gpp'] = ds['gpp'].where(ds['gpp'] != fill_value)
-                        # ds['nee'] = ds['nee'].where(ds['nee'] != fill_value)
-                        # calculate total resp and assign _FillValue
-                        ################ 
-                        # submitted file shows nee=TotalResp-gpp
-                        ds['TotalResp'] = ds['nee'] + ds['gpp']
-                        ################
-                        # ds['TotalResp'].encoding['_FillValue'] = fill_value
-                        # ds['TotalResp'].encoding['dtype'] = d_type
-                        # ds['TotalResp'].encoding['original_shape'] = orig_shape
-                        # # clear soil_temperatures encoding
-                        # fill_value = ds['soil_temperature'].attrs['_FillValue']
-                        # d_type = ds['soil_temperature'].encoding['dtype']
-                        # orig_shape = ds['soil_temperature'].encoding['original_shape']
-                        # file_source = ds['soil_temperature'].encoding['source']
-                        # ds['soil_temperature'].encoding = {}
-                        # ds['soil_temperature'].attrs = {}
-                        # ds['soil_temperature'].encoding['source'] = file_source
-                        # ds['soil_temperature'].encoding['dtype'] = d_type
-                        # ds['soil_temperature'].encoding['original_shape'] = orig_shape
-                        # ds['soil_temperature'].encoding['_FillValue'] = fill_value
                         # # subset to variables of interest
                         ds = ds[config['subset_vars']]
                     elif config['model_name'] == 'CLASSIC':
@@ -3922,16 +4231,16 @@ def process_simulation_files(input_list, top_config):
                         with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
                             print(ds, file=pf)
                         # calculate CN
-                        ds['CN'] = ds['cSoil'] / ds['nSoil']
+                        ds['CN_Total'] = ds['cSoil'] / ds['nSoil']
                     elif config['model_name'] == 'LPJ-GUESS-ML':
                         # create functools.partial function to pass subset variable through to preprocess
                         partial_LPJ_GUESS_ML = partial(preprocess_LPJ_GUESS_ML, config=config, sim_type=sim_type) 
                         # auto merge by variables
                         ds = xr.open_mfdataset(sim_files, parallel=True, engine=engine, chunks=chunk_read, preprocess=partial_LPJ_GUESS_ML, combine='nested', **kwargs)
                         # calculate CN
-                        ds['SoilC'] =  ds['C_SOILMETA'] + ds['C_SOILSTRUCT'] + ds['C_SOILFWD'] + ds['C_SOILCWD'] + ds['C_SOILMICRO'] + ds['C_SLOWSOM'] + ds['C_PASSIVESOM']
-                        ds['SoilN'] =  ds['N_SOILMETA'] + ds['N_SOILSTRUCT'] + ds['N_SOILFWD'] + ds['N_SOILCWD'] + ds['N_SOILMICRO'] + ds['N_SLOWSOM'] + ds['N_PASSIVESOM']
-                        ds['CN'] = ds['SoilC'] / ds['SoilN']
+                        ds['SoilC_Total'] =  ds['C_SOILMETA'] + ds['C_SOILSTRUCT'] + ds['C_SOILFWD'] + ds['C_SOILCWD'] + ds['C_SOILMICRO'] + ds['C_SLOWSOM'] + ds['C_PASSIVESOM']
+                        ds['SoilN_Total'] =  ds['N_SOILMETA'] + ds['N_SOILSTRUCT'] + ds['N_SOILFWD'] + ds['N_SOILCWD'] + ds['N_SOILMICRO'] + ds['N_SLOWSOM'] + ds['N_PASSIVESOM']
+                        ds['CN_Total'] = ds['SoilC_Total'] / ds['SoilN_Total']
                         ds = ds[config['subset_vars']]
                         with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
                             print(ds, file=pf)
@@ -3944,12 +4253,12 @@ def process_simulation_files(input_list, top_config):
                         ds = xr.open_mfdataset(sim_files, parallel=True, engine=engine, chunks=chunk_read, preprocess=partial_LPJ_GUESS, combine='nested', **kwargs)
                         # calculate CN
                         if sim_type in ['b2','otc','sf']:
-                            ds['SoilC'] =  ds.SOMpool.sel(nsompool=['SOILSTRUCT','SOILMICRO','SOILMETA','SLOWSOM','PASSIVESOM']).sum(dim='nsompool')
+                            ds['SoilC_Total'] =  ds.SOMpool.sel(nsompool=['SOILSTRUCT','SOILMICRO','SOILMETA','SLOWSOM','PASSIVESOM']).sum(dim='nsompool')
                         # calculate totalresp
                         ds['TotalResp'] = ds['AutoResp'] + ds['HeteroResp']
                         # subset variables of interest, if b1 then dont select SoilC as it cannot be calculated from the available data files
                         if sim_type == 'b1':
-                            subset_vars = [i for i in config['subset_vars'] if i not in ['SoilC']]
+                            subset_vars = [i for i in config['subset_vars'] if i not in ['SoilC_Total']]
                         else:
                             subset_vars = config['subset_vars']
                         with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
@@ -3973,42 +4282,63 @@ def process_simulation_files(input_list, top_config):
                     ds2 = xr.open_mfdataset(sim_files[1], parallel=True, engine=engine, chunks=chunk_read, preprocess=partial_ecosys, **kwargs)
                     ds3 = xr.open_mfdataset(sim_files[2], parallel=True, engine=engine, chunks=chunk_read, preprocess=partial_ecosys, **kwargs)
                     ds4 = xr.open_mfdataset(sim_files[3], parallel=True, engine=engine, chunks=chunk_read, preprocess=partial_ecosys, **kwargs)
+                    if sim_type not in ['otc','sf']:
+                        ds5 = xr.open_mfdataset(sim_files[4], parallel=True, engine=engine, chunks=chunk_read, preprocess=partial_ecosys, **kwargs)
+                        ds6 = xr.open_mfdataset(sim_files[5], parallel=True, engine=engine, chunks=chunk_read, preprocess=partial_ecosys, **kwargs)
                     # merge TotalResp and SoilTemps
-                    ds = xr.merge([ds1,ds2,ds3,ds4])
+                    ds = xr.merge([ds1, ds2, ds3, ds4])
                     with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
                         print(ds, file=pf)
                     # loop through soil layer dataarrays, for each soil layer add a depth coord and expand dim
-                    ds_list = []
-                    layer_iter = 0
+                    ds_list_temp = []
                     layer_center = config['soil_depths']
-                    layers=['TMAX_SOIL_1','TMAX_SOIL_2','TMAX_SOIL_3','TMAX_SOIL_4','TMAX_SOIL_5', \
+                    temp_layers=['TMAX_SOIL_1','TMAX_SOIL_2','TMAX_SOIL_3','TMAX_SOIL_4','TMAX_SOIL_5', \
                             'TMAX_SOIL_6','TMAX_SOIL_7','TMAX_SOIL_8','TMAX_SOIL_9','TMAX_SOIL_10', 'TMAX_SOIL_11'] 
-                    for layer in layers:
+                    layer_iter = 0
+                    for layer in temp_layers:
                         # expand a dimension to include site and save to list
-                        ds2 = ds.assign_coords({'SoilDepth': layer_center[layer_iter]})
-                        ds2[layer].attrs = {}
-                        ds2[layer] = ds2[layer].expand_dims('SoilDepth')
-                        ds2 = ds2.rename({layer: 'SoilTemp'})
-                        ds_list.append(ds2['SoilTemp'])
+                        ds_temp = ds.assign_coords({'SoilDepth': layer_center[layer_iter]})
+                        ds_temp[layer].attrs = {}
+                        ds_temp[layer] = ds_temp[layer].expand_dims('SoilDepth')
+                        ds_temp = ds_temp.rename({layer: 'SoilTemp'})
+                        ds_list_temp.append(ds_temp['SoilTemp'])
                         layer_iter += 1
                     # merge all the SoilTemp layers into 4D dataarray
-                    ds_soiltemp = xr.combine_by_coords(ds_list)
+                    ds_soiltemp = xr.combine_by_coords(ds_list_temp)
                     with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
                         print(ds, file=pf)
-                    ds = ds.drop_vars(layers)
+                    ds = ds.drop_vars(temp_layers)
                     with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
                         print(ds, file=pf)
                     ds = xr.merge([ds, ds_soiltemp])
                     with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
                         print(ds, file=pf)
+                    # calculate TotalResp and remake attributes
+                    ds['AutoResp'] = ds['ECO_GPP'] - ds['ECO_NPP']
+                    ds['TotalResp'] = ds['ECO_RH'] + ds['AutoResp']
+                    # deal with soilC that does not exist in every simulation
+                    if sim_type in ['b2']:
+                        # merge soilc variables into dataset
+                        ds = xr.merge([ds, ds5, ds6]) 
+                        # add all soil layer variables to SoilC
+                        ds['SoilC_Total'] = ds['SOC_1'] + ds['SOC_2'] + ds['SOC_3'] + ds['SOC_4'] + ds['SOC_5'] + ds['SOC_6'] + \
+                                    ds['SOC_7'] + ds['SOC_8'] + ds['SOC_9'] + ds['SOC_10'] + ds['SOC_11'] 
+                    elif sim_type in ['otc','sf']:
+                        ds['SoilC_Total'] = ds['ECO_RH']
+                        ds['SoilC_Total'].loc[:] = np.nan
                     # add long name and unit attributes
+                    ds['SoilC_Total'].attrs['long_name'] = 'Total soil organic carbon'
+                    ds['SoilC_Total'].attrs['units'] = 'gC/m2'
+                    ds['TotalResp'].attrs['long_name'] = 'Autotrophic + heterotrophic respiration'
+                    ds['TotalResp'].attrs['units'] = 'gC m-2 day-1'
                     ds['SoilTemp'].attrs['long_name'] = 'Soil temperature by layer'
-                    ds['SoilTemp'].attrs['units'] = 'Degree C' 
+                    ds['SoilTemp'].attrs['units'] = 'Degree C'
                     # reorde variable dimenions and remove chunking
                     ds['SoilTemp'] = ds['SoilTemp'].transpose('time', 'SoilDepth', 'lat', 'lon')
+                    ds['SoilC_Total'] = ds['SoilC_Total'].transpose('time', 'lat', 'lon')
                     ds['ECO_RH'] = ds['ECO_RH'].transpose('time', 'lat', 'lon')
                     ds['ECO_GPP'] = ds['ECO_GPP'].transpose('time', 'lat', 'lon')
-                    #ds = ds.chunk({'time': 300, 'SoilDepth': -1, 'lat': -1, 'lon': -1})
+                    ds['AutoResp'] = ds['AutoResp'].transpose('time', 'lat', 'lon')
                     # subset to variables of interest
                     ds = ds[config['subset_vars']]
                     with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
@@ -4017,25 +4347,22 @@ def process_simulation_files(input_list, top_config):
                     ds = ds.astype('float32')
                     with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
                         print(ds, file=pf)
-                    # # assign encoding fillvalues
-                    # for var in ds.data_vars:
-                    #     ds[var].encoding['_FillValue'] = config['nc_write']['fillvalue']
-                    # with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
-                    #     print(ds, file=pf)
-                    #     print(ds['SoilTemp'].encoding, file=pf)
-                    #     print(ds['ECO_RH'].encoding, file=pf)
-                    #     print(ds['ECO_GPP'].encoding, file=pf)
                 case 'elm2':
                     # open single file and save to new file name
                     ds = xr.open_dataset(sim_files[0], engine=engine, chunks=chunk_read, **kwargs)
                     # subset variables
                     ds = ds[config['subset_vars']]
                     # sum all soil C and N pools
-                    ds['SoilC'] = ds['SOIL1C'] + ds['SOIL2C'] + ds['SOIL3C'] + ds['SOIL4C']
-                    ds['SoilN'] = ds['SOIL1N'] + ds['SOIL2N'] + ds['SOIL3N'] + ds['SOIL4N']
-                    ds['CN'] = ds['SoilC'] / ds['SoilN']
+                    ds['SoilC_Layers'] = ds['SOIL1C_vr'] + ds['SOIL2C_vr'] + ds['SOIL3C_vr'] + ds['SOIL4C_vr']   
+                    ds['SoilN_Layers'] = ds['SOIL1N_vr'] + ds['SOIL2N_vr'] + ds['SOIL3N_vr'] + ds['SOIL4N_vr']   
+                    ds['SoilC_Total'] = ds['TOTSOMC']
+                    ds['SoilN_Total'] = ds['SOIL1N'] + ds['SOIL2N'] + ds['SOIL3N'] + ds['SOIL4N']
+                    ds['CN_Total'] = ds['SoilC_Total'] / ds['SoilN_Total']
+                    ds['CN_Layers'] = ds['SoilC_Layers'] / ds['SoilN_Layers']
                     # remove variables used for calculation
-                    ds = ds.drop_vars(['SOIL1C','SOIL2C','SOIL3C','SOIL4C','SOIL1N','SOIL2N','SOIL3N','SOIL4N'])
+                    ds = ds.drop_vars(['SOIL1C_vr','SOIL2C_vr','SOIL3C_vr','SOIL4C_vr', \
+                                       'SOIL1N_vr','SOIL2N_vr','SOIL3N_vr','SOIL4N_vr', \
+                                       'TOTSOMC','SOIL1N','SOIL2N','SOIL3N','SOIL4N'])
             # rename variables
             ds = ds.rename(config['rename_subset'])
             with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
@@ -4065,10 +4392,19 @@ def process_simulation_files(input_list, top_config):
                         # reassign new index/
                         ds = ds.assign_coords({'time': new_index})
             # assign depth intergers to meter depths
-            if config['model_name'] in ['UVic-ESCM','ORCHIDEE-MICT']:
+            if config['model_name'] in ['UVic-ESCM','ORCHIDEE-MICT','JULES']:
                 ds = ds.assign_coords({'SoilDepth': config['soil_depths']})
             # decode cftime
             ds = xr.decode_cf(ds, use_cftime=True)
+            if (config['model_name'] == 'LPJ-GUESS') and (sim_type in ['b2','otc','sf']):
+                ds = ds.reindex({'time': xr.cftime_range(start='2000-01-01 00:00:00', end='2022-12-31 00:00:00', freq='D', calendar='noleap')})
+                with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
+                    print('LPJ_GUESS reindexed', file=pf)
+                    print(ds, file=pf)
+                    print('ds time encoding', file=pf)
+                    print(ds.time.encoding, file=pf)
+                    print('ds time attrs', file=pf)
+                    print(ds.time.attrs, file=pf)
             with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
                 print('time decoded', file=pf)
                 print(ds, file=pf)
@@ -4095,26 +4431,19 @@ def process_simulation_files(input_list, top_config):
                 ds = ds.set_index(lndgrid=['lat','lon'])
                 ds = ds.unstack() 
             # convert lon from -180-180 to 0-360
-            if config['model_name'] in ['ELM2-NGEE', 'ecosys', 'CLASSIC', 'LPJ-GUESS-ML', 'LPJ-GUESS', 'ORCHIDEE-MICT', 'ORCHIDEE-MICT-teb']:
+            if config['model_name'] in ['ELM2-NGEE', 'ecosys', 'CLASSIC', 'LPJ-GUESS-ML', 'LPJ-GUESS', 'ORCHIDEE-MICT', 'ORCHIDEE-MICT-teb','JULES']:
                 ds = ds.assign_coords({'lon': (ds.lon % 360)})
                 ds = ds.sortby('lon', ascending=True)
                 with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
                     print('adjusted lon index', file=pf)
-            # # general cleaning for any unregistered missing values
-            # for var in top_config['combined_vars']:
-            #     # remove _FillValues and missing values
-            #     if config['model_name'] not in ['UVic-ESCM']:
-            #         with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
-            #             print('removing fill values for:', file=pf)
-            #             print(var, file=pf)
-            #             print(ds[var].encoding['_FillValue'], file=pf)
-            #         ds[var] = ds[var].where(ds[var] != ds[var].encoding['_FillValue'])
-            #     # remove problem data with incorrect fill values
-            #     ds[var] = ds[var].where((ds[var] > -990.0)&(ds[var] < 1.0e20))
-            # with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
-            #     print('missing vars added with all nans:',file=pf)
-            #     print(missing_vars, file=pf)
-            #     print(ds, file=pf)
+            # remove zeros from RE,GPP,NEE
+            for var in ds.data_vars:
+                if var in ['AutoResp','HeteroResp','TotalResp','GPP','NEE']:
+                    ds[var] = ds[var].where(ds[var] != 0.0) 
+            # remove unlabeled missing values by 
+            if config['model_name'] in ['UVic-ESCM','ORCHIDEE-MICT','ORCHIDEE-MICT-teb']:
+                for var in ds.data_vars:
+                    ds[var] = ds[var].where((ds[var] > -990.0)&(ds[var] < 1.0e20))
             # adjust units
             missing_vars = [i for i in top_config['combined_vars'] if i not in ds.data_vars]
             data_adj_vars = [i for i in config['data_units'] if i not in missing_vars]
@@ -4145,14 +4474,20 @@ def process_simulation_files(input_list, top_config):
                     print(error, file=pf)
                 pass
             for var in missing_vars:
-                if var not in ['SoilTemp']:
+                if var not in ['SoilTemp','SoilMoist','SoilC_Layers','SoilN_Layers','CN_Layers']:
                     ds[var] = ds_fill_3d
                 else:
                     ds[var] = ds_fill_4d
             # rescale from g C m-2 s-1 to g C m-2 day-1
+            ds['AutoResp'] = ds['AutoResp'] * 86400  
+            ds['HeteroResp'] = ds['HeteroResp'] * 86400  
             ds['TotalResp'] = ds['TotalResp'] * 86400  
-            ds['GPP'] = ds['GPP'] * 86400 
-            ds['NEE'] = ds['TotalResp'] - ds['GPP']
+            ds['GPP'] = ds['GPP'] * 86400
+            if 'NEE' not in missing_vars:
+                ds['NEE'] = ds['NEE'] * 86400
+            else: 
+                ds['NEE'] = ds['TotalResp'] - ds['GPP']
+            # replace any remaining missing_values with np.nan
             # print out combined dataset for debugging
             with open(Path(config['output_dir'] + 'zarr_output/debug_process_simulation.txt'), 'a') as pf:
                 with np.printoptions(threshold=np.inf):
@@ -4176,8 +4511,33 @@ def process_simulation_files(input_list, top_config):
                 lat_df.to_csv(config['output_dir']+'zarr_output/clm5_lat.csv', index=False, float_format="%g")
                 lon_df.to_csv(config['output_dir']+'zarr_output/clm5_lon.csv', index=False, float_format="%g")
                 soild_df.to_csv(config['output_dir']+'zarr_output/clm5_soild.csv', index=False, float_format="%g")
-            # set zarr compression and encoding
-            compress = Zstd(level=6) #, shuffle=Blosc.BITSHUFFLE)
+            # convert all soiltemp data variables to float32 to save space
+            varlist_float32 = ['SoilTemp','SoilMoist','SoilC_Layers','SoilN_Layers','CN_Layers']
+            for var in ds.data_vars:
+                if var in varlist_float32:
+                    ds[var] = ds[var].astype('float32')
+                else:
+                    ds[var] = ds[var].astype('float64')
+            # assign simulation diension
+            ds = ds.assign_coords({'sim': sim_type})
+            ds = ds.expand_dims('sim')
+            # rechunk
+            dim_chunks = {
+                'sim': 1,
+                'time': zarr_chunk_out,
+                'SoilDepth': -1,
+                'lat': -1,
+                'lon': -1}
+            # LPJ-GUESS is only model that gave me SoilTemp with different dimensions across simulation types
+            # to deal with initial baseline not having SoilTemp by layers I have to chunk b1 differently from all other models
+            # I will likely simply remove b1 from processing as there are other issues like monthly vs yearly timesteps across variables
+            if (sim_type == 'b1') and (config['model_name'] == 'LPJ-GUESS'):
+                dim_chunks = {
+                    'sim': 1,
+                    'time': zarr_chunk_out,
+                    'lat': -1,
+                    'lon': -1}
+            ds = ds.chunk(dim_chunks) 
             # clear all chunk and fill value encoding/attrs
             for var in ds.data_vars:
                 try:
@@ -4189,36 +4549,28 @@ def process_simulation_files(input_list, top_config):
                 except:
                     pass
                 try:
+                    del ds[var].encoding['coordinates']
+                except:
+                    pass
+                try:
                     del ds[var].attrs['_FillValue']
                 except:
                     pass
-                if len(ds[var].dims) == 3:
-                    ds[var].encoding['chunks'] = (zarr_chunk_out, -1, -1)
-                elif len(ds[var].dims) == 4:
-                    ds[var].encoding['chunks'] = (zarr_chunk_out, -1, -1, -1)
-            dim_chunks = {
-                'time': zarr_chunk_out,
-                'SoilDepth': -1,
-                'lat': -1,
-                'lon': -1}
-            # LPJ-GUESS is only model that gave me SoilTemp with different dimensions across simulation types
-            # to deal with initial baseline not having SoilTemp by layers I have to chunk b1 differently from all other models
-            # I will likely simply remove b1 from processing as there are other issues like monthly vs yearly timesteps across variables
-            if (sim_type == 'b1') and (config['model_name'] == 'LPJ-GUESS'):
-                dim_chunks = {
-                    'time': zarr_chunk_out,
-                    'lat': -1,
-                    'lon': -1}
-            ds = ds.chunk(dim_chunks) 
+                with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
+                    print('data encoding',file=pf)
+                    print(ds[var].encoding, file=pf)
+                    print('data attrs',file=pf)
+                    print(ds[var].attrs, file=pf)
+                    print('time attrs',file=pf)
+                    print(ds[var].time.attrs, file=pf)
+                    print('time encoding',file=pf)
+                    print(ds[var].time.encoding, file=pf)
             with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
                 print('data rechunked',file=pf)
                 print(ds, file=pf)
-            encode = {var: {'_FillValue': np.nan, 'compressor': compress, 'chunks': ds[var].encoding['chunks']} for var in ds.data_vars}
-            #    'SoilTemp': {'_FillValue': np.NaN, 'compressor': compress},
-            #    'TotalResp': {'_FillValue': np.NaN, 'compressor': compress}}
-            #comp = dict(compressor = compress, _FillValue=np.NaN)
-            # encoding
-            #encode = {var: comp for var in ds.data_vars}
+            # set zarr compression and encoding
+            compress = Zstd(level=6)
+            encode = {var: {'_FillValue': np.nan, 'compressor': compress} for var in ds.data_vars}
             # output to zarr file
             ds.to_zarr(out_file, encoding=encode, mode="w")
             with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
@@ -4237,88 +4589,53 @@ def aggregate_regional_sims(config):
     with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_agg_sims.txt'), 'w') as pf:
         print(config, file=pf)
     with dask.config.set(**{'array.slicing.split_large_chunks': False}):
-        # open b2, otc, sf zarr files, add simulation dimension, create list to merge
+        # create files to combine sim datasets
         ds_list = []
         for sim in ['b2','otc','sf']:
-            try:
-                # create name of file to open for model/sim zarr files
-                ds_file = config['output_dir'] + 'zarr_output/' + config['model_name'] + \
-                                    '/WrPMIP_Pan-Arctic_' + config['model_name'] + '_' + sim + '.zarr'
-                out_file = config['output_dir'] + 'zarr_output/' + config['model_name'] + \
-                                    '/WrPMIP_Pan-Arctic_' + config['model_name'] + '_sims_merged.zarr'
-                # open model file for current simulation
-                ds_tmp = xr.open_zarr(ds_file, chunks='auto', chunked_array_type='dask', use_cftime=True, mask_and_scale=False) 
-                # assign simulation diension
-                ds_tmp = ds_tmp.assign_coords({'sim': sim})
-                ds_tmp = ds_tmp.expand_dims('sim')
-                # append dataset to list for later merging
-                ds_list.append(ds_tmp)
-            except Exception as error:
-                with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_agg_sims.txt'), 'a') as pf:
-                    print(error, file=pf)
-                pass
-        with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_agg_sims.txt'), 'a') as pf:
-            print('dataset list created', file=pf)
-        # merge dataset
-        ds = xr.concat(ds_list, dim='sim')
-        with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_agg_sims.txt'), 'a') as pf:
-            print('merged sims:', file=pf)
-            print(ds, file=pf)
-            print('new model chunks:', file=pf)
-            print(ds['SoilTemp'].encoding['chunks'], file=pf)
-            print('ALT in Aug in to check sign:', file=pf)
-            print(ds['ALT'].sel(time=slice('2010-08-01','2010-08-07'), sim='b2').sel(lat=210, lon=64, method='nearest').values, file=pf)
-            print('WTD in Aug to check sign:', file=pf)
-            print(ds['WTD'].sel(time=slice('2010-08-01','2010-08-07'), sim='b2').sel(lat=210, lon=64, method='nearest').values, file=pf)
-        # set zarr compression and encoding
-        compress = Zstd(level=6) #, shuffle=Blosc.BITSHUFFLE)
-        # clear all chunk and fill value encoding/attrs
-        if config['model_name'] in ['ORCHIDEE-MICT-teb','LPJ-wsl']:
-            zarr_chunk_out = 12
-        else:
-            zarr_chunk_out = 365
-        for var in ds.data_vars:
-            try:
-                del ds[var].encoding['chunks']
-            except:
-                pass
-            try:
-                del ds[var].encoding['_FillValue']
-            except:
-                pass
-            try:
+            # create name of file to open for model/sim zarr files
+            ds_file = config['output_dir'] + 'zarr_output/' + config['model_name'] + \
+                      '/WrPMIP_Pan-Arctic_' + config['model_name'] + '_' + sim + '.zarr'
+            ds_list.append(ds_file)
+        # set expected chunks for reading
+        read_chunks = {'sim': 1,'time': 73,'SoilDepth': -1,'lat': -1,'lon': -1}
+        # merge datasets with open_mfdataset / dask
+        zarr_kwargs = dict(decode_cf=True, mask_and_scale=False)
+        #with xr.open_mfdataset(ds_list, engine='zarr', chunks=read_chunks, combine='nested', concat_dim='sim', **zarr_kwargs) as ds:
+        with xr.open_mfdataset(ds_list, engine='zarr', chunks=read_chunks, use_cftime=True, **zarr_kwargs) as ds:
+            with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_agg_sims.txt'), 'a') as pf:
+                print('dataset:', file=pf)
+                print(ds, file=pf)
+                print('time encoding:', file=pf)
+                print(ds.time.encoding, file=pf)
+                print('time attrs:', file=pf)
+                print(ds.time.attrs, file=pf)
+                print('sim encoding:', file=pf)
+                print(ds.sim.encoding, file=pf)
+                print('sim attrs:', file=pf)
+                print(ds.sim.attrs, file=pf)
+            # remove fillvalue to save output
+            for var in ds.data_vars:
                 del ds[var].attrs['_FillValue']
-            except:
-                pass
-            if len(ds[var].dims) == 4:
-                ds[var].encoding['chunks'] = (1, zarr_chunk_out, -1, -1)
-            elif len(ds[var].dims) == 5:
-                ds[var].encoding['chunks'] = (1, zarr_chunk_out, -1, -1, -1)
-        dim_chunks = {
-            'sim': 1,
-            'time': zarr_chunk_out,
-            'SoilDepth': -1,
-            'lat': -1,
-            'lon': -1}
-        ds = ds.chunk(dim_chunks) 
-        encode = {var: {'_FillValue': np.nan, 'compressor': compress, 'chunks': ds[var].encoding['chunks']} for var in ds.data_vars}
-        # output regional zarr for each model with b2,otc,sf added as siulation dimension 
-        ds.to_zarr(out_file, encoding=encode, mode="w")
-        # close file connections
-        for ds_tmp in ds_list:
-            try:
-                ds_tmp.close()
-            except:
-                pass
-        try:
-            ds.close()
-        except:
-            pass
+                with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_agg_sims.txt'), 'a') as pf:
+                    print(var + ' encoding:', file=pf)
+                    print(ds[var].encoding, file=pf)
+                    print(var + ' attrs:', file=pf)
+                    print(ds[var].attrs, file=pf)
+            ds = ds.assign_coords({'sim': [1,2,3]})
+            ds = ds.chunk(read_chunks)
+            # set zarr compression and encoding
+            compress = Zstd(level=6) 
+            encode = {var: {'_FillValue': np.nan, 'compressor': compress} for var in ds.data_vars}
+            # merge dataset
+            out_file = config['output_dir'] + 'zarr_output/' + config['model_name'] + \
+                        '/WrPMIP_Pan-Arctic_' + config['model_name'] + '_sims_merged.zarr'
+            ds.to_zarr(out_file, encoding=encode, mode="w")
 
 # output final harmonized pan-arctic regional database
 def harmonize_regional_models(config):
     with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_harmonization.txt'), 'w') as pf:     
         print('harmonizing ' + config['model_name'] + ':', file=pf)
+    read_chunks = {'sim': 1,'time': 73,'SoilDepth': -1,'lat': -1,'lon': -1}
     # context manager to keep dask from auto-rechunking
     with dask.config.set(**{'array.slicing.split_large_chunks': False}):
         # create name of file to open for each model
@@ -4327,128 +4644,150 @@ def harmonize_regional_models(config):
         out_file = config['output_dir'] + 'zarr_output/' + config['model_name'] + \
                     '/WrPMIP_Pan-Arctic_' + config['model_name'] + '_sims_harmonized.zarr'
         # open model zarr
-        ds = xr.open_zarr(ds_file, chunks='auto', chunked_array_type='dask', use_cftime=True, mask_and_scale=False) 
-        # assign model names as new dimension to merge on
-        mod = config['model_name']
-        mod_dict = config['models']
-        ds = ds.assign_coords({'model': mod_dict[mod]})
-        ds = ds.expand_dims('model')
-        # save clm lat,lon,soil depths for interpolation of other models
-        clm_lon = pd.read_csv(config['output_dir']+'zarr_output/clm5_lon.csv', index_col=False, float_precision='round_trip')['lon']
-        clm_lat = pd.read_csv(config['output_dir']+'zarr_output/clm5_lat.csv', index_col=False, float_precision='round_trip')['lat']
-        clm_soild =  pd.read_csv(config['output_dir']+'zarr_output/clm5_soild.csv', index_col=False, float_precision='round_trip')['SoilDepth'] 
-        # subset/inpterplote models to clm5 grid/extent
-        if config['model_name'] not in ['CLM5','CLM5-ExIce']:
-            # read in clm lat/lon, make comparison da, interp_like to match grid size/extent
-            fake_data = np.zeros((len(clm_lon),len(clm_lat)))
-            like_array = xr.DataArray(
-                            data=fake_data,
-                            dims=['lon','lat'],
-                            coords=dict(
-                                lon=(['lon'],clm_lon),
-                                lat=(['lat'],clm_lat)))
-            ds = ds.interp_like(like_array, method="nearest", kwargs={'fill_value': np.nan})
-            # interpolate all model depths to clm5 depths by cubic spline interpolation/extrapolation
-            #like_array = xr.DataArray(clm_soild, dims=['SoilDepth'], coords={'SoilDepth': clm_soild})
-            #fake_data = np.zeros(len(clm_soild))
-            #like_array = xr.DataArray(
-            #                data=fake_data,
-            #                dims=['SoilDepth'],
-            #                coords={'SoilDepth': clm_soild})
-            # mask with clm5 landmask
-            with xr.open_dataset(config['output_dir']+'zarr_output/clm5_landmask.nc') as clm5_landinfo:
-                clm5_landmask = clm5_landinfo['landmask']
+        zarr_kwargs = dict(decode_cf=True, mask_and_scale=False)
+        with xr.open_zarr(ds_file, chunks=read_chunks, chunked_array_type='dask', use_cftime=True, **zarr_kwargs) as ds:
+            with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_harmonization.txt'), 'a') as pf:
+                print('dataset:', file=pf)
+                print(ds, file=pf)
+            # remove attributes
+            #ds.attrs = {}
+            # assign model names as new dimension to merge on
+            mod = config['model_name']
+            mod_dict = config['models']
+            ds = ds.assign_coords({'model': mod_dict[mod]})
+            ds = ds.expand_dims('model')
+            # save clm lat,lon,soil depths for interpolation of other models
+            clm_lon = pd.read_csv(config['output_dir']+'zarr_output/clm5_lon.csv', index_col=False, float_precision='round_trip')['lon']
+            clm_lat = pd.read_csv(config['output_dir']+'zarr_output/clm5_lat.csv', index_col=False, float_precision='round_trip')['lat']
+            clm_soild =  pd.read_csv(config['output_dir']+'zarr_output/clm5_soild.csv', index_col=False, float_precision='round_trip')['SoilDepth'] 
+            # subset/inpterplote models to clm5 grid/extent
+            if config['model_name'] not in ['CLM5','CLM5-ExIce']:
+                # read in clm lat/lon, make comparison da, interp_like to match grid size/extent
+                fake_data = np.zeros((len(clm_lon),len(clm_lat)))
+                like_array = xr.DataArray(
+                                data=fake_data,
+                                dims=['lon','lat'],
+                                coords=dict(
+                                    lon=(['lon'],clm_lon),
+                                    lat=(['lat'],clm_lat)))
+                ds = ds.interp_like(like_array, method="nearest", kwargs={'fill_value': np.nan})
+                # interpolate all model depths to clm5 depths by cubic spline interpolation/extrapolation
+                #like_array = xr.DataArray(clm_soild, dims=['SoilDepth'], coords={'SoilDepth': clm_soild})
+                #fake_data = np.zeros(len(clm_soild))
+                #like_array = xr.DataArray(
+                #                data=fake_data,
+                #                dims=['SoilDepth'],
+                #                coords={'SoilDepth': clm_soild})
+                # mask with clm5 landmask
+                with xr.open_dataset(config['output_dir']+'zarr_output/clm5_landmask.nc') as clm5_landinfo:
+                    clm5_landmask = clm5_landinfo['landmask']
                 ds = ds.where(clm5_landmask > 0)
-            # interpolate the soil temperatures to CLM5 soil layer centers
-            if config['model_name'] not in ['LPJ-GUESS-ML']:
-                ds_soiltemp_interp = ds['SoilTemp'].interp(SoilDepth=clm_soild, method="linear", kwargs={'fill_value':'extrapolate'})
-                ds = ds.drop_dims(['SoilDepth'])
-                with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_harmonization.txt'), 'a') as pf:
-                    print('dropped soiltemp dataarray from dataset:', file=pf)
-                    print(ds, file=pf)
-                ds['SoilTemp'] = ds_soiltemp_interp
-                with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_harmonization.txt'), 'a') as pf:
-                    print('added interp soiltemp dataarray to dataset:', file=pf)
-                    print(ds, file=pf)
-                    print('time frequency:', file=pf)
-                    print(ds['time'], file=pf)
-                del ds_soiltemp_interp
+                # interpolate the soil temperatures to CLM5 soil layer centers
+                if config['model_name'] in ['LPJ-GUESS-ML','CLASSIC']:
+                    ds['10cm_SoilTemp'] = ds['SoilTemp'].isel(SoilDepth = 0, drop=True)
+                    try:
+                        ds['10cm_SoilMoist'] = ds['SoilMoist'].isel(SoilDepth = 0, drop=True)
+                    except:
+                        pass
+                if config['model_name'] not in ['LPJ-GUESS-ML']:
+                    ds_soiltemp_interp = ds['SoilTemp'].interp(SoilDepth=clm_soild, method="linear", kwargs={'fill_value':'extrapolate'})
+                    ds_soilmoist_interp = ds['SoilMoist'].interp(SoilDepth=clm_soild, method="linear", kwargs={'fill_value':'extrapolate'})
+                    ds = ds.drop_dims(['SoilDepth'])
+                    with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_harmonization.txt'), 'a') as pf:
+                        print('dropped soiltemp dataarray from dataset:', file=pf)
+                        print(ds, file=pf)
+                    ds['SoilTemp'] = ds_soiltemp_interp
+                    ds['SoilMoist'] = ds_soilmoist_interp
+                    with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_harmonization.txt'), 'a') as pf:
+                        print('added interp soiltemp dataarray to dataset:', file=pf)
+                        print(ds, file=pf)
+                        print('time frequency:', file=pf)
+                        print(ds['time'], file=pf)
+                    del ds_soiltemp_interp, ds_soilmoist_interp
+                    # replace soilDepth dim with integers
+                    ds = ds.assign_coords({'SoilDepth': range(0,len(clm_soild))})
+                    # calculate 10cm soil average
+                    coords = dict(SoilDepth=('SoilDepth', [0,1,2]))
+                    weights = xr.DataArray([0.2,0.4,0.4], dims=('SoilDepth',), coords=coords)
+                    if config['model_name'] not in ['LPJ-GUESS-ML','CLASSIC']:
+                        ds['10cm_SoilTemp'] = ds['SoilTemp'].isel(SoilDepth = [0,1,2]).weighted(weights).mean(dim='SoilDepth')
+                        ds['10cm_SoilMoist'] = ds['SoilMoist'].isel(SoilDepth = [0,1,2]).weighted(weights).mean(dim='SoilDepth')
+                # if LPJ-GUESS-ML do special interpolation by grid
+                if config['model_name'] in ['LPJ-GUESS-ML']:
+                    ds_soiltemp_interp = ds['SoilTemp'].interp(SoilDepth=clm_soild, method="linear")
+                    ds_soilmoist_interp = ds['SoilMoist'].interp(SoilDepth=clm_soild, method="linear")
+                    ds = ds.drop_dims(['SoilDepth'])
+                    with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_harmonization.txt'), 'a') as pf:
+                        print('dropped soiltemp dataarray from dataset:', file=pf)
+                        print(ds, file=pf)
+                    ds['SoilTemp'] = ds_soiltemp_interp
+                    ds['SoilMoist'] = ds_soilmoist_interp
+                    with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_harmonization.txt'), 'a') as pf:
+                        print('added interp soiltemp dataarray to dataset:', file=pf)
+                        print(ds, file=pf)
+                        print('time frequency:', file=pf)
+                        print(ds['time'], file=pf)
+                    del ds_soiltemp_interp, ds_soilmoist_interp
+                    # replace soilDepth dim with integers
+                    ds = ds.assign_coords({'SoilDepth': range(0,len(clm_soild))})
+                    #ds = ds.assign_coords({'SoilDepth': range(0,15)})
+                    #ds = ds.reindex({'SoilDepth': clm_soild}) #range(0,len(clm_soild))})
+                    #ds['SoilTemp'].loc[:] = np.nan
+            #if config['model_name'] == 'UVic-ESCM':
+            #    # resample to daily timestep
+            #    ds = ds.resample(time='1D').asfreq()
+            #    ds = ds.transpose('model','sim','time','SoilDepth','lat','lon', missing_dims='ignore')
+            if config['model_name'] in ['CLM5','CLM5-ExIce']:
                 # replace soilDepth dim with integers
                 ds = ds.assign_coords({'SoilDepth': range(0,len(clm_soild))})
                 # calculate 10cm soil average
                 coords = dict(SoilDepth=('SoilDepth', [0,1,2]))
                 weights = xr.DataArray([0.2,0.4,0.4], dims=('SoilDepth',), coords=coords)
                 ds['10cm_SoilTemp'] = ds['SoilTemp'].isel(SoilDepth = [0,1,2]).weighted(weights).mean(dim='SoilDepth')
-            else:
-                ds['10cm_SoilTemp'] = ds['SoilTemp'].isel(SoilDepth = 0, drop=True)
-                ds = ds.assign_coords({'SoilDepth': range(0,15)})
-                ds = ds.reindex({'SoilDepth': range(0,len(clm_soild))})
-                ds['SoilTemp'].loc[:] = np.nan
-        if config['model_name'] == 'UVic-ESCM':
-            # resample to daily timestep
-            ds = ds.resample(time='1D').asfreq()
+                ds['10cm_SoilMoist'] = ds['SoilMoist'].isel(SoilDepth = [0,1,2]).weighted(weights).mean(dim='SoilDepth')
+            if config['model_name'] in ['ORCHIDEE-MICT-teb','UVic-ESCM']:
+                ds = ds.resample(time='1D').ffill()
             ds = ds.transpose('model','sim','time','SoilDepth','lat','lon', missing_dims='ignore')
-        if config['model_name'] in ['CLM5','CLM5-ExIce']:
-            # replace soilDepth dim with integers
-            ds = ds.assign_coords({'SoilDepth': range(0,len(clm_soild))})
-            # calculate 10cm soil average
-            coords = dict(SoilDepth=('SoilDepth', [0,1,2]))
-            weights = xr.DataArray([0.2,0.4,0.4], dims=('SoilDepth',), coords=coords)
-            ds['10cm_SoilTemp'] = ds['SoilTemp'].isel(SoilDepth = [0,1,2]).weighted(weights).mean(dim='SoilDepth')
-        if config['model_name'] in ['ORCHIDEE-MICT-teb']:
-            ds = ds.resample(time='1D').ffill()
-        # reindex time from 2000-01-01 00:00:00 to 2021-12-31 00:00:00
-        ds = ds.reindex({'time': xr.cftime_range(start='2000-01-01 00:00:00', end='2022-12-31 00:00:00', freq='D', calendar='noleap')})
-        # check harmonzied dim
-        with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_harmonization.txt'), 'a') as pf:
-            with np.printoptions(threshold=np.inf):
-                print(mod + ':\n', file=pf)
+            # reindex time from 2000-01-01 00:00:00 to 2021-12-31 00:00:00
+            ds = ds.reindex({'time': xr.cftime_range(start='2000-01-01 00:00:00', end='2022-12-31 00:00:00', freq='D', calendar='noleap')})
+            # check harmonzied dim
+            with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_harmonization.txt'), 'a') as pf:
+                with np.printoptions(threshold=np.inf):
+                    print(mod + ':\n', file=pf)
+                    print(ds, file=pf)
+                    print('time:', file=pf)
+                    print(ds['time'], file=pf)
+                    print('lat:', file=pf)
+                    print(ds['lat'].values, file=pf)
+                    print('lon:', file=pf)
+                    print(ds['lon'].values, file=pf)
+                    print('SoilDepth:', file=pf)
+                    print(ds['SoilDepth'].values, file=pf)
+            # set zarr compression and encoding
+            compress = Zstd(level=6) #, shuffle=Blosc.BITSHUFFLE)
+            dim_chunks = {'model': 1,'sim': 1,'time': 73,'SoilDepth': 25,'lat': 60,'lon': 720}
+            ds = ds.chunk(dim_chunks)
+            with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_harmonization.txt'), 'a') as pf:
+                print('rechunked', file=pf)
                 print(ds, file=pf)
-                print('time:', file=pf)
-                print(ds['time'], file=pf)
-                print('lat:', file=pf)
-                print(ds['lat'].values, file=pf)
-                print('lon:', file=pf)
-                print(ds['lon'].values, file=pf)
-                print('SoilDepth:', file=pf)
-                print(ds['SoilDepth'].values, file=pf)
-        # set zarr compression and encoding
-        compress = Zstd(level=6) #, shuffle=Blosc.BITSHUFFLE)
-        # clear all chunk and fill value encoding/attrs
-        for var in ds:
-            try:
-                del ds[var].encoding['chunks']
-            except:
-                pass
-            try:
-                del ds[var].encoding['_FillValue']
-            except:
-                pass
-            try:
-                del ds[var].attrs['_FillValue']
-            except:
-                pass
-            if len(ds[var].dims) == 5:
-                ds[var].encoding['chunks'] = (1, 1, 365, -1, -1)
-            elif len(ds[var].dims) == 6:
-                ds[var].encoding['chunks'] = (1, 1, 365, -1, -1, -1)
-        dim_chunks = {
-            'model': 1,
-            'sim': 1,
-            'time': 365,
-            'SoilDepth': -1,
-            'lat': -1,
-            'lon': -1}
-        ds = ds.chunk(dim_chunks) 
-        encode = {var: {'_FillValue': np.nan, 'compressor': compress, 'chunks': ds[var].encoding['chunks']} for var in ds.data_vars}
-        # output regional zarr of entire pan-acrtic for all models and b2,otc,sf simulations 
-        ds.to_zarr(out_file, encoding=encode, mode="w")
-        # close file connections
-        try:
-            ds.close()
-        except Exception as error:
-            print(error)
-            pass
+            # clear all chunk and fill value encoding/attrs
+            for var in ds:
+                try:
+                    del ds[var].encoding['chunks']
+                except:
+                    pass
+                try:
+                    del ds[var].encoding['_FillValue']
+                except:
+                    pass
+                try:
+                    del ds[var].attrs['_FillValue']
+                except:
+                    pass
+            #'chunks': ds[var].encoding['chunks'] 
+            encode = {var: {'_FillValue': np.nan, 'compressor': compress} for var in ds.data_vars}
+            # output regional zarr of entire pan-acrtic for all models and b2,otc,sf simulations 
+            ds.to_zarr(out_file, encoding=encode, mode="w")
 
 # output variable subset netcdf
 def aggregate_regional_models(config_list):
@@ -4457,78 +4796,31 @@ def aggregate_regional_models(config_list):
         # open each models zarr file and append to list for merge 
         ds_list = []
         for config in config_list:
-            try:
-                # create name of file to open for model/sim zarr files
-                ds_file = config['output_dir'] + 'zarr_output/' + config['model_name'] + \
-                            '/WrPMIP_Pan-Arctic_' + config['model_name'] + '_sims_harmonized.zarr'
-                # open model file for current simulation
-                ds_tmp = xr.open_zarr(ds_file, chunks='auto', chunked_array_type='dask', use_cftime=True, mask_and_scale=False)
-                # append dataset to list for later merging
-                ds_list.append(ds_tmp)
-            except Exception as error:
-                with open(Path(config['output_dir'] + 'zarr_output/debug_agg_harm_models.txt'), 'a') as pf:
-                    print(error, file=pf)
-                pass
-        with open(Path(config['output_dir'] + 'zarr_output/debug_agg_harm_models.txt'), 'a') as pf:
-            print('model list created', file=pf)
-            print(ds_list, file=pf)
-        # merge dataset
-        ds = xr.combine_by_coords(ds_list, combine_attrs='drop')
-        # change names back to models
-        ds = ds.assign_coords({'model': list(config['models'].keys())})
-        # change soil depths to clm5
-        clm_soild =  pd.read_csv(config['output_dir']+'zarr_output/clm5_soild.csv', index_col=False, float_precision='round_trip')['SoilDepth'] 
-        ds = ds.assign_coords({'SoilDepth': clm_soild})
-        with open(Path(config['output_dir'] + 'zarr_output/debug_agg_harm_models.txt'), 'a') as pf:
-            print('new model chunks:', file=pf)
-            print(ds['SoilTemp'].encoding['chunks'], file=pf)
-        # set zarr compression and encoding
-        compress = Zstd(level=6) #, shuffle=Blosc.BITSHUFFLE)
-        # clear all chunk and fill value encoding/attrs
-        for var in ds.data_vars:
-            try:
-                del ds[var].encoding['chunks']
-            except:
-                pass
-            try:
-                del ds[var].encoding['_FillValue']
-            except:
-                pass
-            try:
-                del ds[var].attrs['_FillValue']
-            except:
-                pass
-            if len(ds[var].dims) == 5:
-                ds[var].encoding['chunks'] = (1, 1, 365, -1, -1)
-            elif len(ds[var].dims) == 6:
-                ds[var].encoding['chunks'] = (1, 1, 365, -1, -1, -1)
-        dim_chunks = {
-            'model': 1,
-            'sim': 1,
-            'time': 365,
-            'SoilDepth': -1,
-            'lat': -1,
-            'lon': -1}
-        ds = ds.chunk(dim_chunks) 
-        encode = {var: {'_FillValue': np.nan, 'compressor': compress, 'chunks': ds[var].encoding['chunks']} for var in ds.data_vars}
-        # output regional zarr for each model with b2,otc,sf added as siulation dimension 
-        out_file = config['output_dir'] + 'zarr_output/WrPMIP_Pan-Arctic_models_harmonized.zarr'
-        ds.to_zarr(out_file, encoding=encode, mode="w")
-        # close file connections
-        for ds_tmp in ds_list:
-            try:
-                ds_tmp.close()
-            except:
-                pass
-        try:  
-            ds.close()
-        except:
-            pass
-        try:  
-            del ds 
-            del ds_list
-        except:
-            pass
+            # name of each models harmonized zarr store
+            ds_file = config['output_dir'] + 'zarr_output/' + config['model_name'] + \
+                      '/WrPMIP_Pan-Arctic_' + config['model_name'] + '_sims_harmonized.zarr'
+            ds_list.append(ds_file)
+        # set expected chunks for reading
+        read_chunks = {'model': 1,'sim': 1,'time': 73,'SoilDepth': 25,'lat': 60,'lon': 720}
+        # merge datasets with open_mfdataset / dask
+        zarr_kwargs = dict(decode_cf=True, mask_and_scale=False)
+        with xr.open_mfdataset(ds_list, engine='zarr', chunks=read_chunks, use_cftime=True, combine='nested', concat_dim='model', combine_attrs='drop', **zarr_kwargs) as ds:
+            # assign correct model names
+            ds = ds.assign_coords({'model': list(config['models'].keys())})
+            ds = ds.assign_coords({'sim': list(config['sims'].keys())})
+            # assinchange soil depths to clm5
+            clm_soild =  pd.read_csv(config['output_dir']+'zarr_output/clm5_soild.csv', index_col=False, float_precision='round_trip')['SoilDepth'] 
+            ds = ds.assign_coords({'SoilDepth': clm_soild})
+            # print out final dataset info
+            with open(Path(config['output_dir'] + 'zarr_output/debug_agg_harm_models.txt'), 'a') as pf:
+                 print('final harmonized zarr database', file=pf)
+                 print(ds, file=pf)
+            # set zarr compression and encoding 
+            compress = Zstd(level=6)
+            encode = {var: {'_FillValue': np.nan, 'compressor': compress} for var in ds.data_vars}
+            # output final harmonized zarr store 
+            out_file = config['output_dir'] + 'zarr_output/WrPMIP_Pan-Arctic_models_harmonized.zarr'
+            ds.to_zarr(out_file, encoding=encode, mode="w")
 
 # open final zarr to create netcdfs
 def regional_model_zarrs_to_netcdfs(input_list):
@@ -4637,79 +4929,83 @@ def regional_harmonized_zarr_to_monthly_netcdfs(input_list):
             print(error, file=pf)
         pass
 
-def harmonized_netcdf_output(config, agg='daily', by='year', subset_list=[]):
+def harmonized_netcdf_output(config, agg='daily', by='year', subset_model_list=[], subset_sim_list=[], subset_var_list=[]):
     try:
         # create file load location
         zarr_in = config['output_dir'] + 'zarr_output/WrPMIP_Pan-Arctic_models_harmonized.zarr'
         # open file and slice by year in context manager
-        with xr.open_zarr(zarr_in, chunks='auto', chunked_array_type='dask', use_cftime=True, mask_and_scale=False) as ds_tmp:
+        read_chunks = {'model': 1,'sim': 1,'time': 73,'SoilDepth': 25,'lat': 60,'lon': 720}
+        with xr.open_zarr(zarr_in, chunks=read_chunks, chunked_array_type='dask', use_cftime=True, mask_and_scale=False) as ds:
             # subset models if subset_list given
-            if subset_list:
-                ds = ds_tmp.sel(model = subset_list) 
+            if subset_model_list:
+                ds = ds.sel(model = subset_model_list) 
+            if subset_sim_list:
+                ds = ds.sel(sim = subset_sim_list) 
+            if subset_var_list:
+                ds = ds[subset_var_list] 
             # if monthly aggregate by month
             if agg == 'monthly':
-                # for var in ['TotalResp','GPP','NEE']:
-                #     ds[var] = ds[var].resample(time='MS').sum()
-                # for var in ['10cm_SoilTemp','ALT','WTD','SoilC','SoilN','CN']:
-                #     ds[var] = ds[var].resample(time='MS').mean()
                 ds = ds.resample(time='MS').mean()
-        # remove encoding issues caused by zarr for netcdf
-        for var in ds:
-            try:
-                del ds[var].encoding['chunks']
-            except:
-                pass
-            try:
-                del ds[var].encoding['_FillValue']
-            except:
-                pass
-            try:
-                del ds[var].attrs['_FillValue']
-            except:
-                pass
-            if var == 'GPP':
-                ds[var] = ds[var].assign_attrs(units='gC/m2/s', description='Mean gross primary productivity rate')
-            elif var == 'TotalResp':
-                ds[var] = ds[var].assign_attrs(units='gC/m2/s', description='Mean ecosystem respiration rate')
-            elif var == 'NEE':
-                ds[var] = ds[var].assign_attrs(units='gC/m2/s', description='Mean net ecosystem exchange (positive to atmosphere)')
-            elif var == '10cm_SoilTemp':
-                ds[var] = ds[var].assign_attrs(units='degree C', description='10cm soil temperature')
-            elif var == 'ALT':
-                ds[var] = ds[var].assign_attrs(units='m', description='Active layer thickness')
-            elif var == 'WTD':
-                ds[var] = ds[var].assign_attrs(units='m', description='Water table depth (perched if model capable)')
-            elif var == 'SoilC':
-                ds[var] = ds[var].assign_attrs(units='gC/m2', description='Total soil carbon')
-            elif var == 'SoilN':
-                ds[var] = ds[var].assign_attrs(units='gC/m2', description='Total soil nitrogen')
-            elif var == 'CN':
-                ds[var] = ds[var].assign_attrs(units='unitless', description='Carbon to nitrogen ratio')
-        ds = ds.persist()
-        if by == 'year':
-            for year in np.arange(2000,2022):
-                # create monthly output file
-                ncdf_out = config['output_dir'] + 'netcdf_output/WrPMIP_Pan-Arctic_harmonized_' + str(year) + '.nc'
-                if agg == 'monthly':
-                    ncdf_out = config['output_dir'] + 'netcdf_output/WrPMIP_Pan-Arctic_harmonized_monthly_means_' + str(year) + '.nc'
-                # yearly subset
-                ds_sub = ds.sel(time=str(year))
-                # output final netcdf(s)
-                ds_sub.to_netcdf(ncdf_out, mode="w", \
-                        format=config['nc_write']['format'], \
-                        engine=config['nc_write']['engine'])
-        elif by == 'model':
-            for mod in ds.model.values:
-                # create monthly output file
-                ncdf_out = config['output_dir'] + 'netcdf_output/WrPMIP_Pan-Arctic_harmonized_' + str(mod) + '.nc'
-                if agg == 'monthly':
-                    ncdf_out = config['output_dir'] + 'netcdf_output/WrPMIP_Pan-Arctic_harmonized_monthly_means_' + str(mod) + '.nc'
-                # yearly subset
-                ds_sub = ds.sel(model=str(mod))
-                # output final netcdf(s)
-                ds_sub.to_netcdf(ncdf_out, mode="w", \
-                        format=config['nc_write']['format'], \
-                        engine=config['nc_write']['engine'])
+                ds = ds.transpose('model','sim','time','SoilDepth','lat','lon', missing_dims='ignore')
+                ds = ds.chunk({'model':1, 'sim':1, 'time':-1, 'SoilDepth': 25, 'lat':60, 'lon':720})
+            # remove encoding issues caused by zarr for netcdf
+            for var in ds:
+                ds[var].drop_encoding()
+                ds[var].drop_attrs()
+                if var == 'AutoResp':
+                    ds[var] = ds[var].assign_attrs(description='Autotrophic ecosystem respiration rate (always positive)', units='gC/m2/day', _FillValue='nan')
+                elif var == 'HeteroResp':
+                    ds[var] = ds[var].assign_attrs(description='Heterotrophic ecosystem respiration rate (always positive)', units='gC/m2/day', _FillValue='nan')
+                elif var == 'TotalResp':
+                    ds[var] = ds[var].assign_attrs(description='Total ecosystem respiration rate (always positive)', units='gC/m2/day', _FillValue='nan')
+                elif var == 'GPP':
+                    ds[var] = ds[var].assign_attrs(description='Gross primary productivity rate (always positive)', units='gC/m2/day', _FillValue='nan')
+                elif var == 'NEE':
+                    ds[var] = ds[var].assign_attrs(description='Net ecosystem exchange rate (positive to atmosphere)', units='gC/m2/day', _FillValue='nan')
+                elif var == 'SoilMoist':
+                    ds[var] = ds[var].assign_attrs(description='Soil moisture by layer', units='gH2O/m2', _FillValue='nan')
+                elif var == 'SoilTemp':
+                    ds[var] = ds[var].assign_attrs(description='Soil temperature by layer', units='°C', _FillValue='nan')
+                elif var == '10cm_SoilTemp':
+                    ds[var] = ds[var].assign_attrs(description='Soil temperature, 10cm weighted mean', units='°C', _FillValue='nan')
+                elif var == '10cm_SoilMoist':
+                    ds[var] = ds[var].assign_attrs(description='Soil Moisture, 10cm weighted mean', units='g/m2', _FillValue='nan')
+                elif var == 'AirTemp':
+                    ds[var] = ds[var].assign_attrs(description='Near-surface air temperature', units='°C', _FillValue='nan')
+                elif var == 'VegTemp':
+                    ds[var] = ds[var].assign_attrs(description='Vegetation temperature', units='°C', _FillValue='nan')
+                elif var == 'ALT':
+                    ds[var] = ds[var].assign_attrs(description='Active layer thickness (positive into the soil)', units='m', _FillValue='nan')
+                elif var == 'WTD':
+                    ds[var] = ds[var].assign_attrs(description='Water table depth (perched and non-perched models combined)', units='m', _FillValue='nan')
+                elif var == 'SoilC':
+                    ds[var] = ds[var].assign_attrs(description='Total soil carbon', units='gC/m2', _FillValue='nan')
+                elif var == 'SoilN':
+                    ds[var] = ds[var].assign_attrs(description='Total soil nitrogen', units='gC/m2', _FillValue='nan')
+                elif var == 'CN':
+                    ds[var] = ds[var].assign_attrs(description='Carbon to nitrogen ratio', units='unitless', _FillValue='nan')
+            ds.attrs = {
+                'Date': date.today().strftime("%B %d, %Y"),
+                'Creator': 'Jon M Wells (jon.wells@nau.edu)',
+                'Project': 'The Warming Permafrost Model Intercomparison Project (WrPMIP)',
+                'Description': 'Monthly mean outputs from harmonized daily database'                  
+            }
+            ds = ds.persist()
+            ds_list = []
+            ncdf_list =[]
+            if by == 'year':
+                for year in np.arange(2000,2022):
+                    ds_tmp = ds.sel(time=slice(f"{year}-01-01", f"{year}-12-31"))
+                    ncdf_out = config['output_dir'] + 'netcdf_output/WrPMIP_Pan-Arctic_harmonized_' + str(agg) + '_means_' + str(year) + '.nc'
+                    ds_list.append(ds_tmp)
+                    ncdf_list.append(ncdf_out)
+            elif by == 'model':
+                for model in ds.model.values:
+                    ds_tmp = ds.sel(model=model)
+                    ncdf_out = config['output_dir'] + 'netcdf_output/WrPMIP_Pan-Arctic_harmonized_' + str(agg) + '_means_' + str(model) + '.nc'
+                    ds_list.append(ds_tmp)
+                    ncdf_list.append(ncdf_out)
+            xr.save_mfdataset(ds_list, ncdf_list, mode='w', format=config['nc_write']['format'], engine=config['nc_write']['engine'])
     except Exception as error:
         with open(Path(config['output_dir'] + 'netcdf_output/debug_model_netcdfs.txt'), 'a') as pf:
             print(error, file=pf)
@@ -4811,6 +5107,176 @@ def reccap2_plot():
     plt.savefig(out_geo, dpi=300)
     plt.close(fig_reccap)
 
+def warming_treatment_data(input_list):
+    # context manager to not change chunk sizes
+    with dask.config.set(**{'array.slicing.split_large_chunks': False}):
+        # assign config and variable list from input_list
+        config = input_list[0]
+        var_list = input_list[1]
+        with open(Path(config['output_dir'] + 'figures/debug_graph_data.txt'), 'w') as pf:
+            print('graphing started:', file=pf)
+        # open zarr file
+        zarr_file = config['output_dir'] + 'zarr_output/WrPMIP_Pan-Arctic_models_harmonized.zarr'
+        read_chunks = {'model': 1,'sim': 1,'time': 73,'SoilDepth': 25,'lat': 60,'lon': 720}
+        ds = xr.open_zarr(zarr_file, chunks=read_chunks, chunked_array_type='dask', use_cftime=True) 
+        with open(Path(config['output_dir'] + 'figures/debug_graph_data.txt'), 'a') as pf:
+            print('data loaded:', file=pf)
+            print(ds, file=pf)
+        # select variables
+        ds = ds[var_list]
+        # change to -180/180 coords
+        ds['lon'] =('lon', (((ds.lon.values + 180) % 360) - 180))
+        ds = ds.sortby(['lon'])
+        # select time window and resample to annual cummulative flux and annual mean environmental variables
+        ds = ds.sel(time=slice('2000-01-01','2022-12-31'))
+        var_sub_cum = ['AutoResp','HeteroResp','TotalResp','GPP','NEE']
+        ds_summer_cum = ds[var_sub_cum].copy(deep=True)
+        ds_summer_cum = ds_summer_cum.sel(time=is_summer(ds_summer_cum['time.month'])).groupby('time.year').sum(dim=['time'], skipna=True)
+        var_sub_mean = ['VegTemp','AirTemp','10cm_SoilTemp','10cm_SoilMoist','ALT','WTD','SoilC','SoilN','CN']
+        ds_summer_mean = ds[var_sub_mean].copy(deep=True)
+        ds_summer_mean = ds_summer_mean.sel(time=is_summer(ds_summer_mean['time.month'])).groupby('time.year').mean(dim=['time'], skipna=True)
+        ds_summer_max = ds[['ALT', 'WTD']].copy(deep=True)
+        ds_summer_max = ds_summer_max.sel(time=is_summer(ds_summer_max['time.month'])).groupby('time.year').max(dim=['time'], skipna=True)
+        ds_summer = ds_summer_cum.merge(ds_summer_mean)
+        ds_summer['ALT_MAX'] = ds_summer_max['ALT']
+        ds_summer['WTD_MAX'] = ds_summer_max['WTD']
+        ds_summer = ds_summer.chunk({'sim':-1, 'year':-1, 'lat':-1, 'lon':-1}).persist()
+        #ds_winter = ds_winter_cum.merge(ds_winter_mean)
+        with open(Path(config['output_dir'] + 'figures/debug_graph_data.txt'), 'a') as pf:
+            print('annual means and sums:', file=pf)
+            print(ds_summer, file=pf)
+        # create list for grids around sites
+        ds_list = []
+        ds_summer_list = []
+        ds_winter_list = []
+        site_gps = config['site_gps'] 
+        # loop through sites and select grids
+        for site in site_gps:
+            # find middle grid center
+            ds_center = ds_summer.sel(lon=site_gps[site]['lon'], lat=site_gps[site]['lat'], method='nearest')
+            ds_summer_sub = ds_summer.sel(lon=slice(ds_center['lon']-2.0, ds_center['lon']+2.0), lat=slice(ds_center['lat']-2.0, ds_center['lat']+2.0)).copy(deep=True)
+            #ds_sub = ds.sel(lon=slice(ds_center['lon']-2.0, ds_center['lon']+2.0), lat=slice(ds_center['lat']-2.0, ds_center['lat']+2.0)).copy(deep=True)
+            #ds_winter_sub = ds_winter.sel(lon=slice(ds_center['lon']-2.0, ds_center['lon']+2.0), lat=slice(ds_center['lat']-2.0, ds_center['lat']+2.0)).copy()
+            with open(Path(config['output_dir'] + 'figures/debug_soiltemp_graphs.txt'), 'a') as pf:
+                print(ds_center, file=pf)
+                print(ds_summer_sub, file=pf)
+                print(site, file=pf)
+            # calculate summer cum fluxes and summer mean responses for everything else
+            ds_summer_sub = ds_summer_sub.stack(gridcell=['lon','lat'], create_index=False) 
+            ds_summer_sub = ds_summer_sub.drop_vars(['lat','lon']) 
+            ds_summer_sub = ds_summer_sub.assign_coords({'gridcell': np.arange(1,ds_summer_sub.gridcell.size+1)})
+            #ds_sub = ds_sub.stack(gridcell=['lon','lat'], create_index=False)
+            #ds_sub = ds_sub.drop_vars(['lat','lon']) 
+            #ds_sub = ds_sub.assign_coords({'gridcell': np.arange(1,ds_sub.gridcell.size+1)})
+            with open(Path(config['output_dir'] + 'figures/debug_graph_data.txt'), 'a') as pf:
+                print('ds_summer_sub:', file=pf)
+                print(ds_summer_sub, file=pf)
+            # expand a dimension to include site and save to list
+            ds_summer_sub = ds_summer_sub.assign_coords({'site': site})
+            ds_summer_sub = ds_summer_sub.expand_dims('site')
+            #ds_sub = ds_sub.assign_coords({'site': site})
+            #ds_sub = ds_sub.expand_dims('site')
+            with open(Path(config['output_dir'] + 'figures/debug_graph_data.txt'), 'a') as pf:
+                print(ds_summer_sub, file=pf)
+            ds_summer_list.append(ds_summer_sub)
+            #ds_list.append(ds_sub)
+        with open(Path(config['output_dir'] + 'figures/debug_graph_data.txt'), 'a') as pf:
+            print('datasets appended', file=pf)
+        ds.close()
+        # combine site dimension to have multiple sites
+        ds_summer_sites = xr.combine_by_coords(ds_summer_list).chunk({'site':-1, 'year':-1, 'sim':-1, 'gridcell':-1}).persist()
+        #ds_sites = xr.combine_by_coords(ds_list).chunk({'site':-1, 'time': -1, 'sim':-1, 'gridcell':-1}).persist()
+        # calculate the normalized effectsize at sites
+        #ds_sites_clean = ds_sites.where(ds_sites['TotalResp'] > 8)
+        #ds_sites_deltas = ds_sites_clean.sel(sim='otc') - ds_sites_clean.sel(sim='b2')
+        #ds_sites_deltas = ds_sites_deltas.where(ds_sites_deltas['10cm_SoilTemp'] > 0.05)
+        #ds_sites_effectsize = (ds_sites_deltas['TotalResp'] / ds_sites_clean['TotalResp'].sel(sim='b2')) * 100
+        #ds_sites_effectsize = ds_sites_effectsize.to_dataset(name='TotalResp')
+        #ds_sites_nef = ds_sites_effectsize / ds_sites_deltas['10cm_SoilTemp'] 
+        ds_summer_sites_clean = ds_summer_sites.where(ds_summer_sites['TotalResp'] > 8) # cell selection for carbon
+        ds_summer_sites_deltas = ds_summer_sites_clean.sel(sim='otc') - ds_summer_sites_clean.sel(sim='b2') # otc - b2 delta
+        ds_summer_sites_deltas = ds_summer_sites_deltas.where(ds_summer_sites_deltas['10cm_SoilTemp'] > 0.05) # cell selection for warming
+        ds_summer_sites_effectsize = (ds_summer_sites_deltas['TotalResp'] / ds_summer_sites_clean['TotalResp'].sel(sim='b2')) * 100 # otc percent change from b2
+        ds_summer_sites_effectsize = ds_summer_sites_effectsize.to_dataset(name='TotalResp')
+        ds_summer_sites_nef = ds_summer_sites_effectsize / ds_summer_sites_deltas['10cm_SoilTemp'] # effectsize normalized by delta 10cm_SoilTemp
+        with open(Path(config['output_dir'] + 'figures/debug_graph_data.txt'), 'a') as pf:
+            print('ds_summer_sites_clean:', file=pf)
+            print(ds_summer_sites_clean, file=pf)
+            print('ds_summer_sites_deltas:', file=pf)
+            print(ds_summer_sites_deltas, file=pf)
+            print('ds_summer_sites_effectsize:', file=pf)
+            print(ds_summer_sites_effectsize, file=pf)
+            print('ds_summer_sites_nef:', file=pf)
+            print(ds_summer_sites_nef, file=pf)
+        # count values
+        # count_total = ds_summer_sites['TotalResp'].count()
+        # count_total_nonnan = ds_summer_sites['TotalResp'].isnull().sum()
+        # count_total_sf = ds_summer_sites['TotalResp'].sel(sim='sf').count() 
+        # count_total_otc = ds_summer_sites['TotalResp'].sel(sim='otc').count() 
+        # count_total_b2 = ds_summer_sites['TotalResp'].sel(sim='b2').count() 
+        # count_total_nonnan_sf = ds_summer_sites['TotalResp'].sel(sim='sf').isnull().sum()
+        # count_total_nonnan_otc = ds_summer_sites['TotalResp'].sel(sim='otc').isnull().sum()
+        # count_total_nonnan_b2 = ds_summer_sites['TotalResp'].sel(sim='b2').isnull().sum()
+        # count_clean_sf = ds_summer_sites_clean['TotalResp'].sel(sim='sf').isnull().sum()
+        # count_clean_otc = ds_summer_sites_clean['TotalResp'].sel(sim='otc').isnull().sum()
+        # count_clean_b2 = ds_summer_sites_clean['TotalResp'].sel(sim='b2').isnull().sum()
+        # count_deltas_total = ds_summer_sites_deltas['TotalResp'].count()
+        # count_deltas_clean = ds_summer_sites_deltas['TotalResp'].isnull().sum()
+        # count_ef_total = ds_summer_sites_effectsize.count()
+        # count_ef_clean = ds_summer_sites_effectsize.isnull().sum()
+        # count_nef_total = ds_summer_sites_nef.count()
+        # count_nef_clean = ds_summer_sites_nef.isnull().sum()
+        # count_list = ['total','total_nonnan','total_sf','total_otc','total_b2','total_nonnan_sf','total_nonnan_otc','total_nonnan_b2',\
+        #               'clean_sf','clean_otc','clean_b2','delta_total','delta_clean','ef_total','ef_clean','nef_total','nef_clean']
+        # count_values = [count_total, count_total_nonnan, count_total_sf, count_total_otc, count_total_b2, count_total_nonnan_sf, \
+        #                 count_total_nonnan_otc, count_total_nonnan_b2, count_clean_sf, count_clean_otc, count_clean_b2, count_deltas_total, \
+        #                 count_deltas_clean, count_ef_total, count_ef_clean, count_nef_total, count_nef_clean]
+        # df_counts = pd.DataFrame({'calc': count_list, 'count': count_values})
+        # df_counts.to_csv(config['output_dir'] + 'figures/ds_counts.csv', index=False)
+        # normalize C,N,C:N for Resp v N plots
+        ds_summer_sites_nef['TotalResp_std'] = ds_summer_sites_nef['TotalResp'].std(dim=['gridcell','year'], skipna=True)
+        ds_summer_sites_nef['SoilN_b2'] = ds_summer_sites_clean['SoilN'].sel(sim='b2').mean(dim=['gridcell','year'], skipna=True)
+        ds_summer_sites_nef['SoilC_b2'] = ds_summer_sites_clean['SoilC'].sel(sim='b2').mean(dim=['gridcell','year'], skipna=True)
+        ds_summer_sites_nef['CN_b2'] = ds_summer_sites_clean['CN'].sel(sim='b2').mean(dim=['gridcell','year'], skipna=True)
+        ds_summer_sites_nef['SoilN_b2_std'] = ds_summer_sites_clean['SoilN'].sel(sim='b2').std(dim=['gridcell','year'], skipna=True)
+        ds_summer_sites_nef['SoilC_b2_std'] = ds_summer_sites_clean['SoilC'].sel(sim='b2').std(dim=['gridcell','year'], skipna=True)
+        ds_summer_sites_nef['CN_b2_std'] = ds_summer_sites_clean['CN'].sel(sim='b2').std(dim=['gridcell','year'], skipna=True)
+        ds_summer_sites_nef['SoilN_b2_modmean'] = ds_summer_sites_clean['SoilN'].sel(sim='b2').mean(dim=['gridcell','year','site'], skipna=True)
+        ds_summer_sites_nef['SoilC_b2_modmean'] = ds_summer_sites_clean['SoilC'].sel(sim='b2').mean(dim=['gridcell','year','site'], skipna=True)
+        ds_summer_sites_nef['CN_b2_modmean'] = ds_summer_sites_clean['CN'].sel(sim='b2').mean(dim=['gridcell','year','site'], skipna=True)
+        ds_summer_sites_nef['SoilN_b2_centered'] = (ds_summer_sites_clean['SoilN'].sel(sim='b2')/ds_summer_sites_nef['SoilN_b2_modmean']).mean(dim=['gridcell','year'], skipna=True)
+        ds_summer_sites_nef['SoilC_b2_centered'] = (ds_summer_sites_clean['SoilC'].sel(sim='b2')/ds_summer_sites_nef['SoilC_b2_modmean']).mean(dim=['gridcell','year'], skipna=True)
+        ds_summer_sites_nef['CN_b2_centered'] = (ds_summer_sites_clean['CN'].sel(sim='b2')/ds_summer_sites_nef['CN_b2_modmean']).mean(dim=['gridcell','year'], skipna=True)
+        ds_summer_sites_nef['SoilN_b2_centered_std'] = (ds_summer_sites_clean['SoilN'].sel(sim='b2')/ds_summer_sites_nef['SoilN_b2_modmean']).std(dim=['gridcell','year'], skipna=True)
+        ds_summer_sites_nef['SoilC_b2_centered_std'] = (ds_summer_sites_clean['SoilC'].sel(sim='b2')/ds_summer_sites_nef['SoilC_b2_modmean']).std(dim=['gridcell','year'], skipna=True)
+        ds_summer_sites_nef['CN_b2_centered_std'] = (ds_summer_sites_clean['CN'].sel(sim='b2')/ds_summer_sites_nef['CN_b2_modmean']).std(dim=['gridcell','year'], skipna=True)
+        # output cleaned, delta, effectsize, nef datasets
+            # ds_sites,
+            # ds_sites_clean,
+            # ds_sites_deltas,
+            # ds_sites_effectsize,
+            # ds_sites_nef,
+        ds_list = [
+            ds_summer,
+            ds_summer_sites, 
+            ds_summer_sites_clean, 
+            ds_summer_sites_deltas, 
+            ds_summer_sites_effectsize, 
+            ds_summer_sites_nef]
+            # config['output_dir'] + 'figures/ds_sites.nc',
+            # config['output_dir'] + 'figures/ds_sites_clean.nc',
+            # config['output_dir'] + 'figures/ds_sites_deltas.nc',
+            # config['output_dir'] + 'figures/ds_sites_effectsize.nc',
+            # config['output_dir'] + 'figures/ds_sites_nef.nc',
+        ncdf_list = [
+            config['output_dir'] + 'figures/ds_summer.nc',
+            config['output_dir'] + 'figures/ds_summer_sites.nc',
+            config['output_dir'] + 'figures/ds_summer_sites_clean.nc',
+            config['output_dir'] + 'figures/ds_summer_sites_deltas.nc',
+            config['output_dir'] + 'figures/ds_summer_sites_effectsize.nc',
+            config['output_dir'] + 'figures/ds_summer_sites_nef.nc']
+        xr.save_mfdataset(ds_list, ncdf_list, mode='w', format=config['nc_write']['format'], engine=config['nc_write']['engine'])
+
 def warming_treatment_effect_graphs(input_list):
     # context manager to not change chunk sizes
     with dask.config.set(**{'array.slicing.split_large_chunks': False}):
@@ -4821,7 +5287,8 @@ def warming_treatment_effect_graphs(input_list):
             print('graphing started:', file=pf)
         # open zarr file
         zarr_file = config['output_dir'] + 'zarr_output/WrPMIP_Pan-Arctic_models_harmonized.zarr'
-        ds = xr.open_zarr(zarr_file, chunks='auto', chunked_array_type='dask', use_cftime=True, mask_and_scale=True) 
+        read_chunks = {'model': 1,'sim': 1,'time': 73,'SoilDepth': 25,'lat': 60,'lon': 720}
+        ds = xr.open_zarr(zarr_file, chunks=read_chunks, chunked_array_type='dask', use_cftime=True) 
         # select soil layer
         with open(Path(config['output_dir'] + 'figures/debug_soiltemp_graphs.txt'), 'a') as pf:
             print('data loaded:', file=pf)
@@ -4832,35 +5299,26 @@ def warming_treatment_effect_graphs(input_list):
         ds['lon'] =('lon', (((ds.lon.values + 180) % 360) - 180))
         # use sortby to enforce monotonically increasing dims for xarray
         ds = ds.sortby(['lon'])
-        # test plot for ORCHIDEE-MICT
-        # # datarrays for weighted average of top soil layers
-        # coords = dict(SoilDepth=('SoilDepth', [0.01, 0.04, 0.09]))
-        # with open(Path(config['output_dir'] + 'figures/debug_soiltemp_graphs.txt'), 'a') as pf:
-        #     print('coords for weighted mean calculation', file=pf)
-        #     print(coords, file=pf)
-        # weights = xr.DataArray([0.2,0.4,0.4], dims=("SoilDepth",), coords=coords)
-        # with open(Path(config['output_dir'] + 'figures/debug_soiltemp_graphs.txt'), 'a') as pf:
-        #     print('weights for weighted mean calculation', file=pf)
-        #     print(weights, file=pf)
-        # #ds = ds.isel(SoilDepth = 0, drop=True)
-        # ds['10cm_SoilTemp'] = ds['SoilTemp'].isel(SoilDepth = [0,1,2]).weighted(weights).mean(dim='SoilDepth', skipna=True)
-        # with open(Path(config['output_dir'] + 'figures/debug_soiltemp_graphs.txt'), 'a') as pf:
-        #     print('subset selected', file=pf)
-        #     print(ds, file=pf)
+        # sort models (alphabetically didn't work as capitalization seems to matter)
+        #desired_order = ['CLASSIC','CLM5','CLM5-ExIce','ecosys','ELM1-ECA','ELM2-NGEE','JULES','JSBACH', \
+        #                 'LPJ-GUESS','LPJ-GUESS-ML','ORCHIDEE-MICT','ORCHIDEE-MICT-teb','UVic-ESCM']
+        #ds_order = xr.DataArray(data=range(0,len(desired_order)), dims=['model'], coords={'model': desired_order})
+        #ds = ds.sortby(ds_order)
         # calculate summer cum fluxes and summer mean responses for everything else
         #ds = ds.sel(model=["CLM5","CLM5-ExIce","ELM2-NGEE","UVic-ESCM","ecosys","ELM1-ECA","CLASSIC"])
         ds = ds.sel(time=slice('2000-01-01','2020-12-31'))
-        var_sub_cum = ['TotalResp','GPP','NEE']
+        var_sub_cum = ['AutoResp','HeteroResp','TotalResp','GPP','NEE']
         ds_summer_cum = ds[var_sub_cum].copy(deep=True)
-        ds_summer_cum = ds_summer_cum.sel(time=is_maes_summer(ds_summer_cum['time.month'])).groupby('time.year').sum(dim=['time'], skipna=True)
+        ds_summer_cum = ds_summer_cum.sel(time=is_summer(ds_summer_cum['time.month'])).groupby('time.year').sum(dim=['time'], skipna=True)
         ds_winter_cum = ds[var_sub_cum].copy(deep=True)
         ds_winter_cum = ds_winter_cum.sel(time=is_winter(ds_winter_cum['time.month'])).groupby('time.year').sum(dim=['time'], skipna=True)
-        var_sub_mean = ['10cm_SoilTemp','ALT','WTD','SoilC','SoilN','CN']
+        var_sub_mean = ['VegTemp','AirTemp','10cm_SoilTemp','10cm_SoilMoist','ALT','WTD','SoilC','SoilN','CN']
         ds_summer_mean = ds[var_sub_mean].copy(deep=True)
-        ds_summer_mean = ds_summer_mean.sel(time=is_maes_summer(ds_summer_mean['time.month'])).groupby('time.year').mean(dim=['time'], skipna=True)
+        ds_summer_mean = ds_summer_mean.sel(time=is_summer(ds_summer_mean['time.month'])).groupby('time.year').mean(dim=['time'], skipna=True)
         ds_winter_mean = ds[var_sub_mean].copy(deep=True)
         ds_winter_mean = ds_winter_mean.sel(time=is_winter(ds_winter_mean['time.month'])).groupby('time.year').mean(dim=['time'], skipna=True)
         ds_summer = ds_summer_cum.merge(ds_summer_mean).persist()
+        #ds_summer.to_netcdf(Path(config['output_dir'] + 'figures/ds_summer.nc'), mode="w", format='NETCDF4_CLASSIC', engine='netcdf4')
         ds_efd_summer = ds_summer.copy(deep=True)
         ds_summer_deltas = ds_summer.sel(sim='otc') - ds_summer.sel(sim='b2')
         with open(Path(config['output_dir'] + 'figures/debug_soiltemp_graphs.txt'), 'a') as pf:
@@ -4881,6 +5339,7 @@ def warming_treatment_effect_graphs(input_list):
             print('ds effect size normed by temp difference', file=pf)
             print(ds_efd_summer, file=pf)
         ds_winter = ds_winter_cum.merge(ds_winter_mean).persist()
+        #ds_winter.to_netcdf(Path(config['output_dir'] + 'figures/ds_winter.nc'), mode="w", format='NETCDF4_CLASSIC', engine='netcdf4')
         ds_efd_winter = ds_winter.copy(deep=True)
         ds_winter_deltas = ds_winter.sel(sim='sf') - ds_winter.sel(sim='b2')
         ds_efd_winter['TotalResp_efd'] = (ds_winter_deltas['TotalResp'] / ds_winter['TotalResp'].sel(sim='b2')) / ds_winter_deltas['10cm_SoilTemp'] 
@@ -4918,8 +5377,8 @@ def warming_treatment_effect_graphs(input_list):
         for site in site_gps:
             # find middle grid center
             ds_center = ds_summer.sel(lon=site_gps[site]['lon'], lat=site_gps[site]['lat'], method='nearest')
-            ds_summer_sub = ds_summer.sel(lon=slice(ds_center['lon']-2.75, ds_center['lon']+2.75), lat=slice(ds_center['lat']-2.75, ds_center['lat']+2.75)).copy()
-            ds_winter_sub = ds_winter.sel(lon=slice(ds_center['lon']-2.75, ds_center['lon']+2.75), lat=slice(ds_center['lat']-2.75, ds_center['lat']+2.75)).copy()
+            ds_summer_sub = ds_summer.sel(lon=slice(ds_center['lon']-2.0, ds_center['lon']+2.0), lat=slice(ds_center['lat']-2.0, ds_center['lat']+2.0)).copy()
+            ds_winter_sub = ds_winter.sel(lon=slice(ds_center['lon']-2.0, ds_center['lon']+2.0), lat=slice(ds_center['lat']-2.0, ds_center['lat']+2.0)).copy()
             with open(Path(config['output_dir'] + 'figures/debug_soiltemp_graphs.txt'), 'a') as pf:
                 print(ds_center, file=pf)
                 print(ds_summer_sub, file=pf)
@@ -4956,13 +5415,46 @@ def warming_treatment_effect_graphs(input_list):
         ds_summer_sites = xr.combine_by_coords(ds_summer_list)
         ds_winter_sites = xr.combine_by_coords(ds_winter_list)
         # calculate the temp differences for otc - ctrl
+        ds_summer_site_all = ds_summer_sites.copy(deep=True)
+        ds_winter_site_all = ds_winter_sites.copy(deep=True)
         ds_summer_sites = ds_summer_sites.where(ds_summer_sites.TotalResp > 8)
         ds_summer_site_grids = ds_summer_sites.copy(deep=True)
-        ds_summer_site_clean = ds_summer_sites.where(ds_summer_sites['10cm_SoilTemp'] > 0.05)
+        ds_summer_site_clean = ds_summer_sites.where(ds_summer_sites['10cm_SoilTemp'] > 0.05) #wrong
+        # hsmd of normalized effect size
+        ds_summer_site_nef_hsmd = ds_summer_site_clean['TotalResp'].sel(sim='otc') / ds_summer_site_clean['TotalResp'].sel(sim='b2')
+        ds_summer_site_nef_hsmd = ds_summer_site_nef_hsmd.to_dataset(name='resp_ratio_otc')
+        ds_summer_site_nef_hsmd['resp_ratio_b2'] = ds_summer_site_clean['TotalResp'].sel(sim='b2') / ds_summer_site_clean['TotalResp'].sel(sim='b2')
+        ds_summer_site_nef_hsmd['temp_delta'] = ds_summer_site_clean['10cm_SoilTemp'].sel(sim='otc') / ds_summer_site_clean['10cm_SoilTemp'].sel(sim='b2')
+        ds_summer_site_nef_otc = ds_summer_site_nef_hsmd['resp_ratio_otc'] / ds_summer_site_nef_hsmd['temp_delta']
+        ds_summer_site_nef_b2 = ds_summer_site_nef_hsmd['resp_ratio_b2'] / ds_summer_site_nef_hsmd['temp_delta']
+        ds_summer_site_nef_otc = ds_summer_site_nef_otc.assign_coords({'sim': 'otc'})
+        ds_summer_site_nef_otc = ds_summer_site_nef_otc.expand_dims('sim')
+        ds_summer_site_nef_b2 = ds_summer_site_nef_b2.assign_coords({'sim': 'b2'})
+        ds_summer_site_nef_b2 = ds_summer_site_nef_b2.expand_dims('sim')
+        ds_nef = xr.concat([ds_summer_site_nef_otc,ds_summer_site_nef_b2], dim='sim')
+        ds_summer_site_nef_hsmd['nef_otc'] = ds_nef.sel(sim='otc').mean(dim='gridcell', skipna=False)
+        ds_summer_site_nef_hsmd['nef_b2'] = ds_nef.sel(sim='b2').mean(dim='gridcell', skipna=False)
+        ds_summer_site_nef_hsmd['nef_psdev'] = ds_nef.sel(sim=['otc','b2']).std(dim=['gridcell','sim'], skipna=False)
+        ds_summer_site_nef_hsmd['nef_hsmd'] = (ds_summer_site_nef_hsmd['nef_otc'] - ds_summer_site_nef_hsmd['nef_b2']) / ds_summer_site_nef_hsmd['nef_psdev']
+        #ds_summer_site_nef_hsmd.to_netcdf(Path(config['output_dir'] + 'figures/ds_summer_site_nef_hsmd.nc'), mode="w", format='NETCDF4_CLASSIC', engine='netcdf4')
+        # er hsmd
         ds_summer_site_means_otc = ds_summer_site_clean.sel(sim='otc').mean(dim='gridcell', skipna=True)
         ds_summer_site_means_b2 = ds_summer_site_clean.sel(sim='b2').mean(dim='gridcell', skipna=True)
         ds_summer_site_pooledsd = ds_summer_site_clean.sel(sim=['otc','b2']).std(dim=['gridcell','sim'], skipna=True)
-        ds_summer_site_hsmd = (ds_summer_site_means_otc - ds_summer_site_means_b2) / ds_summer_site_pooledsd
+        ds_summer_site_hsmd = (ds_summer_site_means_otc - ds_summer_site_means_b2) / ds_summer_site_pooledsd 
+        ds_summer_site_hsmd['SoilN_b2'] = ds_summer_site_means_b2['SoilN']
+        ds_summer_site_hsmd['SoilC_b2'] = ds_summer_site_means_b2['SoilC']
+        ds_summer_site_hsmd['CN_b2'] = ds_summer_site_means_b2['CN']
+        #ds_summer_site_hsmd.to_netcdf(Path(config['output_dir'] + 'figures/ds_summer_site_hsmd.nc'), mode="w", format='NETCDF4_CLASSIC', engine='netcdf4')
+        #ds_summer_site_hsmd.to_netcdf(Path(config['output_dir'] + 'figures/ds_grids_hsmd.nc'), mode="w", format='NETCDF4_CLASSIC', engine='netcdf4')
+        #ds_summer_site_means_otc_all = ds_summer_site_all.sel(sim='otc').mean(dim='gridcell', skipna=True)
+        #ds_summer_site_means_b2_all = ds_summer_site_all.sel(sim='b2').mean(dim='gridcell', skipna=True)
+        #ds_summer_site_pooledsd_all = ds_summer_site_all.sel(sim=['otc','b2']).std(dim=['gridcell','sim'], skipna=True)
+        #ds_summer_site_hsmd_all = (ds_summer_site_means_otc_all - ds_summer_site_means_b2_all) / ds_summer_site_pooledsd_all
+        #ds_summer_site_hsmd_all['SoilN'] = ds_summer_site_means_b2_all['SoilN']
+        #ds_summer_site_hsmd_all['SoilC'] = ds_summer_site_means_b2_all['SoilC']
+        #ds_summer_site_hsmd_all['CN'] = ds_summer_site_means_b2_all['CN']
+        ds_summer_site_deltas_all = ds_summer_site_all.sel(sim='otc') - ds_summer_site_all.sel(sim='b2')
         ds_summer_site_deltas = ds_summer_sites.sel(sim='otc') - ds_summer_sites.sel(sim='b2')
         ds_summer_site_deltas = ds_summer_site_deltas.where(ds_summer_site_deltas['10cm_SoilTemp'] > 0.05)
         df_sum_site_delta = ds_summer_site_deltas['TotalResp'].to_dataframe()
@@ -4998,14 +5490,65 @@ def warming_treatment_effect_graphs(input_list):
             print('summer deltas', file=pf)
             print(ds_summer_site_deltas, file=pf)
         # fix grids for previous plots
+        with open(Path(config['output_dir'] + 'figures/debug_soiltemp_graphs.txt'), 'a') as pf:
+            print('nef before mean', file=pf)
+            print(ds_site_efd_summer, file=pf)
+            print('ds summer site clean', file=pf)
+            print(ds_summer_site_clean, file=pf)
+        ds_summer_site_nef_time = ds_site_efd_summer.mean(dim=['gridcell'], skipna=True)
+        ds_summer_site_nef = ds_site_efd_summer.mean(dim=['gridcell','year'], skipna=True).to_dataset(name='TotalResp')
+        with open(Path(config['output_dir'] + 'figures/debug_soiltemp_graphs.txt'), 'a') as pf:
+            print('nef after mean', file=pf)
+            print(ds_summer_site_nef, file=pf)
+        ds_summer_site_nef['TotalResp_std'] = ds_site_efd_summer.std(dim=['gridcell','year'], skipna=True)
+        ds_summer_site_nef['SoilN_b2_modmean'] = ds_summer_site_clean['SoilN'].sel(sim='b2').mean(dim=['gridcell','year','site'], skipna=True)
+        ds_summer_site_nef['SoilC_b2_modmean'] = ds_summer_site_clean['SoilC'].sel(sim='b2').mean(dim=['gridcell','year','site'], skipna=True)
+        ds_summer_site_nef['CN_b2_modmean'] = ds_summer_site_clean['CN'].sel(sim='b2').mean(dim=['gridcell','year','site'], skipna=True)
+        ds_summer_site_nef['SoilN_b2'] = ds_summer_site_clean['SoilN'].sel(sim='b2').mean(dim=['gridcell','year'], skipna=True) / ds_summer_site_nef['SoilN_b2_modmean']
+        ds_summer_site_nef['SoilC_b2'] = ds_summer_site_clean['SoilC'].sel(sim='b2').mean(dim=['gridcell','year'], skipna=True) / ds_summer_site_nef['SoilC_b2_modmean']
+        ds_summer_site_nef['CN_b2'] = ds_summer_site_clean['CN'].sel(sim='b2').mean(dim=['gridcell','year'], skipna=True) / ds_summer_site_nef['CN_b2_modmean']
+        ds_summer_site_nef['SoilN_b2_temp'] = ds_summer_site_clean['SoilN'].sel(sim='b2') / ds_summer_site_nef['SoilN_b2_modmean']
+        ds_summer_site_nef['SoilC_b2_temp'] = ds_summer_site_clean['SoilC'].sel(sim='b2') / ds_summer_site_nef['SoilC_b2_modmean']
+        ds_summer_site_nef['CN_b2_temp'] = ds_summer_site_clean['CN'].sel(sim='b2') / ds_summer_site_nef['CN_b2_modmean']
+        ds_summer_site_nef['SoilN_b2_std'] = ds_summer_site_nef['SoilN_b2_temp'].std(dim=['gridcell','year'], skipna=True)
+        ds_summer_site_nef['SoilC_b2_std'] = ds_summer_site_nef['SoilC_b2_temp'].std(dim=['gridcell','year'], skipna=True)
+        ds_summer_site_nef['CN_b2_std'] = ds_summer_site_nef['CN_b2_temp'].std(dim=['gridcell','year'], skipna=True)
+        with open(Path(config['output_dir'] + 'figures/debug_soiltemp_graphs.txt'), 'a') as pf:
+            print('nef after adding other variables', file=pf)
+            print(ds_summer_site_nef, file=pf)
         ds_summer_sites = ds_summer_sites.mean(dim='gridcell')
         ds_summer_site_mean = ds_summer_site_mean.mean(dim='gridcell')
         ds_summer_site_deltas = ds_summer_site_deltas.mean(dim='gridcell')
+        ds_summer_site_deltas_all = ds_summer_site_deltas_all.mean(dim='gridcell')
         ds_summer_site_mean_deltas = ds_summer_site_mean_deltas.mean(dim='gridcell')
         ds_winter_sites = ds_winter_sites.mean(dim='gridcell')
         ds_winter_site_mean = ds_winter_site_mean.mean(dim='gridcell')
         ds_winter_site_deltas = ds_winter_site_deltas.mean(dim='gridcell')
         ds_winter_site_mean_deltas = ds_winter_site_mean_deltas.mean(dim='gridcell')
+        # # sort models in alphabetical order (for somereaons ecosys is last, looks like capitals sort first...)
+        # # having to create a list in the order I want to sort properly
+        # desired_order = ["CLASSIC","CLM5","CLM5-ExIce","ecosys","ELM1-ECA","ELM2-NGEE","JSBACH","LPJ-GUESS-ML","LPJ-GUESS","ORCHIDEE-MICT","ORCHIDEE-MICT-teb","UVic-ESCM"]
+        # ds_order = xr.DataArray(data=range(0,len(desired_order)), dims=['model'], coords={'model': desired_order})
+        # ds_summer = ds_summer.sortby(ds_order)
+        # ds_summer_deltas = ds_summer_deltas.sortby(ds_order)
+        # ds_summer_effectsize = ds_summer_effectsize.sortby(ds_order)
+        # ds_summer_site_all = ds_summer_site_all.sortby(ds_order)
+        # ds_summer_site_hmsd = ds_summer_site_hsmd.sortby(ds_order)
+        # ds_summer_site_deltas = ds_summer_site_deltas.sortby(ds_order)
+        # ds_summer_site_mean_deltas = ds_summer_site_mean_deltas.sortby(ds_order)
+        # ds_summer_geomean_cavm_deltas = ds_summer_geomean_cavm_deltas.sortby(ds_order)
+        # ds_summer_geomean_deltas = ds_summer_geomean_deltas.sortby(ds_order)
+        # ds_efd_summer = ds_efd_summer.sortby(ds_order)
+        # ds_site_efd_summer = ds_site_efd_summer.sortby(ds_order)
+        # ds_winter = ds_winter.sortby(ds_order)
+        # ds_winter_deltas = ds_winter_deltas.sortby(ds_order)
+        # ds_winter_effectsize = ds_winter_effectsize.sortby(ds_order)
+        # ds_winter_site_all = ds_winter_site_all.sortby(ds_order)
+        # ds_winter_site_deltas = ds_winter_site_deltas.sortby(ds_order)
+        # ds_winter_site_mean_deltas = ds_winter_site_mean_deltas.sortby(ds_order)
+        # ds_winter_geomean_cavm_deltas = ds_winter_geomean_cavm_deltas.sortby(ds_order)
+        # ds_winter_geomean_deltas = ds_winter_geomean_deltas.sortby(ds_order)
+        # ds_efd_winter = ds_efd_winter.sortby(ds_order)
         #### Summer ##########################
         # graph delta 10cm soil temp by site/model through time
         cb_pal = ["#000000","#004949","#009292","#ff6db6","#ffb6db","#490092","#006ddb","#b66dff","#6db6ff","#b6dbff","#920000","#924900","#db6d00","#24ff24","#ffff6d"]
@@ -5125,6 +5668,144 @@ def warming_treatment_effect_graphs(input_list):
         ds_summer_site_hsmd['TotalResp'].plot(x='year', col='model', col_wrap=4, hue='site')
         plt.savefig(Path(config['output_dir'] + 'figures/OTC_hsmd_by_site_through_time_line.png'), dpi=300)
         plt.close(fig_effectsize)
+        #
+        fig_effectsize = plt.figure(figsize=(8,6))
+        ds_summer_site_nef_time.plot.scatter(x='year', y='TotalResp', col='model', col_wrap=4, hue='site', ylim=(-50,150))
+        plt.savefig(Path(config['output_dir'] + 'figures/OTC_nef_by_site_through_time_scatter.png'), dpi=300)
+        plt.close(fig_effectsize)
+        #
+        fig_effectsize = plt.figure(figsize=(8,6))
+        ds_summer_site_nef_time.plot(x='year', col='model', col_wrap=4, hue='site')
+        plt.ylim(-50,150)
+        plt.savefig(Path(config['output_dir'] + 'figures/OTC_nef_by_site_through_time_line.png'), dpi=300)
+        plt.close(fig_effectsize)
+        #
+        fig_effectsize = plt.figure(figsize=(8,6))
+        ds_summer_site_hsmd.plot.scatter(x='year', y='TotalResp', col='model', col_wrap=4, hue='site')
+        plt.savefig(Path(config['output_dir'] + 'figures/OTC_hsmd_by_time.png'), dpi=300)
+        plt.close(fig_effectsize)
+        #
+        fig_effectsize = plt.figure(figsize=(10,6))
+        model_list = ['CLASSIC','ELM1-ECA','ELM2-NGEE','LPJ-GUESS-ML']
+        p = ds_summer_site_hsmd.sel(model=model_list).plot.scatter(x='SoilN_b2', y='TotalResp', col='model', col_wrap=2, hue='site', sharex=False)
+        for ax in p.axs.flat:
+            try:
+                x_data = ax.collections[0].get_offsets().data[:, 0]    
+                y_data = ax.collections[0].get_offsets().data[:, 1]    
+                npmask = np.isfinite(x_data) & np.isfinite(y_data)
+                ax.set_xlim(0, max(x_data[npmask])+ 0.1*max(x_data[npmask]))
+                m1, b1 = np.polyfit(x_data[npmask], y_data[npmask], 1)
+                ax.plot(x_data, m1*x_data + b1, 'r')
+            except:
+                pass
+        p.set_xlabels('Soil Nitrogen (gN/m2)')
+        plt.subplots_adjust(wspace=0.1, right=0.8)
+        plt.savefig(Path(config['output_dir'] + 'figures/OTC_hsmd_by_soiln.png'), dpi=300)
+        plt.close(fig_effectsize)
+        #
+        fig_effectsize = plt.figure(figsize=(8,6))
+        model_list = ['CLASSIC','ELM1-ECA','ELM2-NGEE','LPJ-GUESS-ML']
+        p = ds_summer_site_nef.sel(model=model_list).plot.scatter(x='SoilN_b2', y='TotalResp', col='model', col_wrap=2, hue='site')
+        plt.xlim(0,3)
+        for ax in p.axs.flat:
+            try:
+                with open(Path(config['output_dir'] + 'figures/debug_soiltemp_graphs.txt'), 'a') as pf:
+                    print('axes:', file=pf)
+                    print(ax.get_title(), file=pf)
+                x_data = ax.collections[0].get_offsets().data[:, 0]    
+                y_data = ax.collections[0].get_offsets().data[:, 1]    
+                npmask = np.isfinite(x_data) & np.isfinite(y_data)
+                ax.set_xlim(0, max(x_data[npmask])+ 0.1*max(x_data[npmask]))
+                m1, b1 = np.polyfit(x_data[npmask], y_data[npmask], 1)
+                ax.plot(x_data, m1*x_data + b1, 'r')
+            except:
+                pass
+        p.set_xlabels('Mean Centered Soil Nitrogen')
+        p.set_ylabels('Normalized Effect Size (%/°C)')
+        plt.subplots_adjust(wspace=0.1, right=0.8)
+        plt.savefig(Path(config['output_dir'] + 'figures/OTC_nef_by_soiln.png'), dpi=300, bbox_inches='tight')
+        plt.close(fig_effectsize)
+        #
+        fig_effectsize = plt.figure(figsize=(8,6))
+        model_list = ['CLASSIC','ELM1-ECA','ELM2-NGEE','LPJ-GUESS-ML','JULES']
+        #ds_summer_site_nef.to_netcdf(Path(config['output_dir'] + 'figures/ds_summer_site_nef.nc'), mode="w", format='NETCDF4_CLASSIC', engine='netcdf4')
+        p = ds_summer_site_nef.sel(model=model_list).plot.scatter(x='SoilN_b2', y='TotalResp', col='model', col_wrap=2, hue='site')
+        plt.xlim(0,2.5)
+        plt.ylim(-30,150)
+        mod_iter = iter(model_list)
+        for ax in p.axs.flat:
+            try:
+                with open(Path(config['output_dir'] + 'figures/debug_soiltemp_graphs.txt'), 'a') as pf:
+                    print('axes:', file=pf)
+                    print(ax.get_title(), file=pf)
+                x_data = ax.collections[0].get_offsets().data[:, 0]    
+                y_data = ax.collections[0].get_offsets().data[:, 1]    
+                npmask = np.isfinite(x_data) & np.isfinite(y_data)
+                #ax.set_xlim(0, max(x_data[npmask])+ 0.3*max(x_data[npmask]))
+                viridis_cmap = plt.get_cmap('viridis')
+                values = np.linspace(0,1,14)
+                vmap_iter = iter([viridis_cmap(value) for value in values])
+                with open(Path(config['output_dir'] + 'figures/debug_soiltemp_graphs.txt'), 'a') as pf:
+                    print('cmap:', file=pf)
+                    print(viridis_cmap, file=pf)
+                    print(vmap_iter, file=pf)
+                for site in ds_summer_site_nef.site.values:
+                    model_name = next(mod_iter)
+                    site_color = next(vmap_iter)
+                    x_val = ds_summer_site_nef['SoilN_b2'].sel(model=model_name, site=site)
+                    y_val = ds_summer_site_nef['TotalResp'].sel(model=model_name, site=site) 
+                    if not np.isnan(x_val) and not np.isnan(y_val): 
+                        ax.errorbar(
+                            x=x_val, \
+                            y=y_val, \
+                            ecolor=site_color, fmt='none', \
+                            xerr=ds_summer_site_nef['SoilN_b2_std'].sel(model=model_name, site=site), \
+                            yerr=ds_summer_site_nef['TotalResp_std'].sel(model=model_name, site=site))
+                m1, b1 = np.polyfit(x_data[npmask], y_data[npmask], 1)
+                ax.plot(x_data, m1*x_data + b1, 'r')
+            except Exception as error:
+                with open(Path(config['output_dir'] + 'figures/debug_soiltemp_graphs.txt'), 'a') as pf:
+                    print('error:', file=pf)
+                    print(error, file=pf)
+                pass
+        p.set_xlabels('Mean Centered Soil Nitrogen')
+        p.set_ylabels('Normalized Effect Size (%/°C)')
+        plt.subplots_adjust(wspace=0.1, right=0.8)
+        plt.savefig(Path(config['output_dir'] + 'figures/OTC_nef_by_soiln_errorbar.png'), dpi=300, bbox_inches='tight')
+        plt.close(fig_effectsize)
+        #
+        fig_effectsize = plt.figure(figsize=(8,6))
+        p = ds_summer_site_hsmd.plot.scatter(x='SoilC_b2', y='TotalResp', col='model', col_wrap=4, hue='site', sharex=False)
+        for ax in p.axs.flat:
+            try:
+                x_data = ax.collections[0].get_offsets().data[:, 0]    
+                y_data = ax.collections[0].get_offsets().data[:, 1]    
+                npmask = np.isfinite(x_data) & np.isfinite(y_data)
+                #ax.set_xlim(0, max(x_data[npmask])+ 0.1*max(x_data[npmask]))
+                m1, b1 = np.polyfit(x_data[npmask], y_data[npmask], 1)
+                ax.plot(x_data, m1*x_data + b1, 'r')
+            except:
+                pass
+        p.set_xlabels('Soil Carbon (gC/m2)')
+        plt.subplots_adjust(wspace=0.1, right=0.8)
+        plt.savefig(Path(config['output_dir'] + 'figures/OTC_hsmd_by_soilc.png'), dpi=300)
+        plt.close(fig_effectsize)
+        #
+        fig_effectsize = plt.figure(figsize=(8,6))
+        p = ds_summer_site_hsmd.sel(model=model_list).plot.scatter(x='CN_b2', y='TotalResp', col='model', col_wrap=2, hue='site')
+        for ax in p.axs.flat:
+            try:
+                x_data = ax.collections[0].get_offsets().data[:, 0]    
+                y_data = ax.collections[0].get_offsets().data[:, 1]    
+                npmask = np.isfinite(x_data) & np.isfinite(y_data)
+                m1, b1 = np.polyfit(x_data[npmask], y_data[npmask], 1)
+                ax.plot(x_data, m1*x_data + b1, 'r')
+            except:
+                pass
+        p.set_xlabels('Soil CN')
+        plt.subplots_adjust(wspace=0.1, right=0.8)
+        plt.savefig(Path(config['output_dir'] + 'figures/OTC_hsmd_by_cn.png'), dpi=300)
+        plt.close(fig_effectsize)
         #matplotlib.rcParams['axes.prop_cycle'] = matplotlib.cycler(color=cb_pal)
         y_lab = 'Delta Mean Summer 10cm Soil Temperature (°C)' 
         x_lab = 'Year' 
@@ -5135,6 +5816,12 @@ def warming_treatment_effect_graphs(input_list):
         #plt.ylabel(y_lab, fontsize=16)
         plt.savefig(Path(config['output_dir'] + 'figures/10cm_SoilTemp_OTC_warming_effect_by_site_through_time.png'), dpi=300)
         plt.close(fig_effectsize)
+        #
+        fig_effectsize = plt.figure(figsize=(8,6))
+        ds_summer_site_deltas_all['10cm_SoilTemp'].plot(x='year', col='model', col_wrap=4, hue='site')
+        plt.savefig(Path(config['output_dir'] + 'figures/10cm_SoilTemp_OTC_warming_effect_by_site_through_time_all.png'), dpi=300)
+        plt.close(fig_effectsize)
+        #
         fig_effectsize = plt.figure(figsize=(8,6))
         ds_summer_site_mean_deltas['10cm_SoilTemp'].plot(x='year', hue='model')
         #plt.title('Tundra Sites Mean Summer Warming', fontsize=20)
@@ -5166,23 +5853,54 @@ def warming_treatment_effect_graphs(input_list):
         fig_effectsize = plt.figure(figsize=(8,6))
         er_tmp = ds_summer_effectsize.copy(deep=True)
         er_tmp['TotalResp'] = er_tmp['TotalResp'] * 100
-        er_tmp.plot.scatter(x='10cm_SoilTemp', y='TotalResp', hue='model')
+        er_tmp.drop_sel(model='JSBACH').plot.scatter(x='10cm_SoilTemp', y='TotalResp', hue='model')
         plt.title('', fontsize=20)
         #plt.title('CAVM Delta ER by Delta OTC warming', fontsize=20)
         plt.xlabel('Delta Mean Summer 10cm Soil Temperature (°C)', fontsize=16)
-        plt.ylabel('Summer ER Effectsize (%)', fontsize=16)
+        plt.ylabel('Summer CAVM ER Effect Size (%)', fontsize=16)
         #plt.axline((0,0), slope=1, linestyle='--', c='black', zorder=-100)
         plt.savefig(Path(config['output_dir'] + 'figures/OTC_Delta-delta_ER_by_soiltemp.png'), dpi=300)
         plt.close(fig_effectsize)
+        # graph ER effect by soil delta increase
+        fig_effectsize = plt.figure(figsize=(8,6))
+        er_tmp = ds_winter_effectsize.copy(deep=True)
+        er_tmp['TotalResp'] = er_tmp['TotalResp'] * 100
+        er_tmp.plot.scatter(x='10cm_SoilTemp', y='TotalResp', hue='model')
+        plt.title('', fontsize=20)
+        #plt.title('CAVM Delta ER by Delta SF warming', fontsize=20)
+        plt.xlabel('Delta Mean Winter 10cm Soil Temperature (°C)', fontsize=16)
+        plt.ylabel('Winter CAVM ER Effect Size (%)', fontsize=16)
+        #plt.axline((0,0), slope=1, linestyle='--', c='black', zorder=-100)
+        plt.savefig(Path(config['output_dir'] + 'figures/SF_Delta-delta_ER_by_soiltemp.png'), dpi=300)
+        plt.close(fig_effectsize)
         # graph the gridded responses
+        cavm_outline = gpd.read_file('/projects/warpmip/shared/cavm_shapefiles/physiog_la.shp')
+        with open(Path(config['output_dir'] + 'figures/debug_soiltemp_graphs.txt'), 'a') as pf:
+            print('cavm projection:', file=pf)
+            print(cavm_outline.crs, file=pf)
+        cavm_outline['geometry'] = cavm_outline['geometry'].rotate(180, origin=(90,-180))
+        with open(Path(config['output_dir'] + 'figures/debug_soiltemp_graphs.txt'), 'a') as pf:
+            print('cavm geodataset:', file=pf)
+            print(cavm_outline, file=pf)
+            print('cavm columns:', file=pf)
+            print(cavm_outline.columns.to_list(), file=pf)
+        cavm_union = cavm_outline.dissolve(by='physiog')
+        cavm_outer = cavm_union.geometry.iloc[0]
+        with open(Path(config['output_dir'] + 'figures/debug_soiltemp_graphs.txt'), 'a') as pf:
+            print('cavm after dissolve:', file=pf)
+            print(cavm_union, file=pf)
+            print('cavm outer:', file=pf)
+            print(cavm_outer, file=pf)
         fig_effectsize = plt.figure(figsize=(10,10))
         p = ds_summer_deltas['10cm_SoilTemp'].sel(year=2010).plot(col='model', col_wrap=4, robust=True, transform=ccrs.PlateCarree(), \
-                subplot_kws={'projection': ccrs.Orthographic(0,90)}, cbar_kwargs={'label': 'Delta Summer Soil Temperature (°C)'}, \
+                subplot_kws={'projection': ccrs.Orthographic(0,90)}, cbar_kwargs={'label': 'Delta Mean Summer Soil Temperature (°C)'}, \
                 cmap='coolwarm') #'RdBu_r')
         for ax in p.axs.flat:
             ax.coastlines()
             ax.set_extent([-180,180,55,90], crs=ccrs.PlateCarree())
             add_circle_boundary(ax)
+            cavm_outline.plot(ax=ax, edgecolor="purple", facecolor="none")
+            cavm_union.plot(ax=ax, edgecolor='yellow', facecolor='none')
         plt.subplots_adjust(wspace=0.1, right=0.8)
         #plt.axline((0,0), slope=1, linestyle='--', c='black', zorder=-100)
         plt.savefig(Path(config['output_dir'] + 'figures/OTC_55N_year2010_10cm_soiltemp_by_model.png'), dpi=300)
@@ -5242,18 +5960,6 @@ def warming_treatment_effect_graphs(input_list):
         plt.ylim((-1, 4))
         plt.savefig(Path(config['output_dir'] + 'figures/10cm_SoilTemp_SF_warming_effect_55N_through_time.png'), dpi=300)
         plt.close(fig_effectsize)
-        # graph ER effect by soil delta increase
-        fig_effectsize = plt.figure(figsize=(8,6))
-        er_tmp = ds_winter_effectsize.copy(deep=True)
-        er_tmp['TotalResp'] = er_tmp['TotalResp'] * 100
-        er_tmp.plot.scatter(x='10cm_SoilTemp', y='TotalResp', hue='model')
-        plt.title('', fontsize=20)
-        #plt.title('CAVM Delta ER by Delta SF warming', fontsize=20)
-        plt.xlabel('Delta Mean Winter 10cm Soil Temperature (°C)', fontsize=16)
-        plt.ylabel('Winter ER Effectsize (%)', fontsize=16)
-        #plt.axline((0,0), slope=1, linestyle='--', c='black', zorder=-100)
-        plt.savefig(Path(config['output_dir'] + 'figures/SF_Delta-delta_ER_by_soiltemp.png'), dpi=300)
-        plt.close(fig_effectsize)
         # graph the gridded responses
         fig_effectsize = plt.figure(figsize=(10,8))
         p = ds_winter_deltas['10cm_SoilTemp'].sel(year=2010).plot(col='model', col_wrap=4, robust=True, transform=ccrs.PlateCarree(), \
@@ -5280,7 +5986,6 @@ def warming_treatment_effect_graphs(input_list):
         #plt.axline((0,0), slope=1, linestyle='--', c='black', zorder=-100)
         plt.savefig(Path(config['output_dir'] + 'figures/SF_55N_year2010_ER_effect_size_delta_by_model.png'), dpi=300)
         plt.close(fig_effectsize)
-
         # #######
         # ## effect size normed by temp delta
         # #######
@@ -5302,7 +6007,6 @@ def warming_treatment_effect_graphs(input_list):
         #plt.ylabel(y_lab, fontsize=16)
         plt.savefig(Path(config['output_dir'] + 'figures/Sites_eft_by_model_2.png'), dpi=300)
         plt.close(fig_effectsize)
-
         # ds_sites_ef_numerator = ds_summer_site_grids['TotalResp'].sel(sim='otc') - ds_summer_site_grids['TotalResp'].sel(sim='b2')
         # ds_sites_ef_denominator = ds_summer_site_grids['TotalResp'].sel(sim='b2', drop=True)
         # ds_sites_c = ds_summer_site_grids['SoilC'].sel(sim='b2', drop=True)
@@ -7786,24 +8490,21 @@ def schadel_plots_env(var, config, out_dir):
     pd_obs_monthly_otc = pd_obs_monthly[pd_obs_monthly['sim'] == 'otc']
     pd_obs_monthly_sf = pd_obs_monthly[pd_obs_monthly['sim'] == 'sf']
     # plot annual change
-    p1 = ggplot(pd_df_annual, aes(x='year', y=var, color='model', linetype='sim')) + \
-        geom_line() + \
-        geom_point(mapping=aes(x='year', y=obs_str), color='red', data=pd_obs_annual_sf, inherit_aes=False) + \
-        geom_point(mapping=aes(x='year', y=obs_str), color='black', data=pd_obs_annual_control, inherit_aes=False) + \
-        geom_errorbar(mapping=aes(x='year', ymax=ymax_str, ymin=ymin_str), color='red', data=pd_obs_annual_sf, inherit_aes=False) + \
-        geom_errorbar(mapping=aes(x='year', ymax=ymax_str, ymin=ymin_str), color='black', data=pd_obs_annual_control, inherit_aes=False) + \
-        scale_x_datetime(breaks=date_breaks('5 years'), labels=date_format('%Y')) + \
-        labs(x=r'time (year)', y=y_label) + \
-        theme_bw() + \
-        theme(
-            axis_text_x = element_text(angle = 90),
-            axis_line = element_line(colour = "black"),
-            panel_grid_major = element_blank(),
-            panel_grid_minor = element_blank(),
-            panel_border = element_blank(),
-            panel_background = element_blank()
-        )
-        #scale_x_datetime(breaks=date_breaks('5 years'), labels=date_format('%Y')) + \
+    geom_point(mapping=aes(x='year', y=obs_str), color='black', data=pd_obs_annual_control, inherit_aes=False) + \
+    geom_errorbar(mapping=aes(x='year', ymax=ymax_str, ymin=ymin_str), color='red', data=pd_obs_annual_sf, inherit_aes=False) + \
+    geom_errorbar(mapping=aes(x='year', ymax=ymax_str, ymin=ymin_str), color='black', data=pd_obs_annual_control, inherit_aes=False) + \
+    scale_x_datetime(breaks=date_breaks('5 years'), labels=date_format('%Y')) + \
+    labs(x=r'time (year)', y=y_label) + \
+    theme_bw() + \
+    theme(
+        axis_text_x = element_text(angle = 90),
+        axis_line = element_line(colour = "black"),
+        panel_grid_major = element_blank(),
+        panel_grid_minor = element_blank(),
+        panel_border = element_blank(),
+        panel_background = element_blank()
+    )
+    #scale_x_datetime(breaks=date_breaks('5 years'), labels=date_format('%Y')) + \
     p2 = ggplot(pd_df_monthly, aes(x='month', y=var, color='model', linetype='sim')) + \
         geom_line() + \
         scale_x_continuous(breaks = np.arange(np.round(min(pd_df_monthly.month)), np.round(max(pd_df_monthly.month)), step = 2)) + \

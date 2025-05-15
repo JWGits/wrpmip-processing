@@ -14,16 +14,22 @@
 	"has_otc": "True",
 	"has_sf": "True",
 	"subset_vars": [
+		"ECO_RH",
 		"ECO_GPP",
+		"AutoResp",
 		"TotalResp",
 		"SoilTemp",
-		"ACTV_LYR"
+		"ACTV_LYR",
+		"SoilC"
 	],
 	"rename_subset": {
 		"ACTV_LYR": "ALT",
-		"ECO_GPP": "GPP"
+		"ECO_GPP": "GPP",
+		"ECO_RH": "HeteroResp"
 	},
 	"data_units": {
+		"AutoResp":{"scale_type": "multiply", "scale_value": 0.00001157407, "units": "g C m-2 s-1"},
+		"HeteroResp":{"scale_type": "multiply", "scale_value": 0.00001157407, "units": "g C m-2 s-1"},
 		"TotalResp":{"scale_type": "multiply", "scale_value": 0.00001157407, "units": "g C m-2 s-1"},
 		"GPP":{"scale_type": "multiply", "scale_value": 0.00001157407, "units": "g C m-2 s-1"},
 		"ALT":{"scale_type": "multiply", "scale_value": -1, "units": "m"}

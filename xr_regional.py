@@ -15,7 +15,7 @@ from pathlib import Path
 # main function
 def main():
     # initialize dask mpi
-    initialize(interface='ib0', nthreads=1, memory_limit='40G', worker_class='distributed.Worker', local_directory='/tmp/dask_scratch', exit=False)
+    initialize(interface='ib0', nthreads=1, memory_limit='30G', worker_class='distributed.Worker', local_directory='/tmp/dask_scratch', exit=False)
     # return all main functions that are not rank 1
     comm = MPI.COMM_WORLD
     rank = comm.Get_rank()
@@ -33,6 +33,7 @@ def main():
         mod_con = xrfx.read_config(model)
         mod_con.update({'output_dir': config['output_dir']})
         mod_con.update({'models': config['models']})
+        mod_con.update({'sims': config['sims']})
         mod_con.update({'nc_read': config['nc_read']})
         mod_con.update({'nc_write': config['nc_write']})
         model_config_list.append(mod_con)
@@ -45,29 +46,31 @@ def main():
         Path(mod_con['output_dir'] + 'figures/' + mod_con['model_name']).chmod(0o762)
     # start dask cluster
     with Client() as client:
-        # # make folders structure 
-        # L0 = [client.submit(xrfx.regional_dir_prep, f) for f in model_config_list]
-        # wait(L0)
-        # del L0
-        # # create list of netcdf files to merge each models regional simulation outputs
-        # L1 = [client.submit(xrfx.regional_simulation_files, f) for f in itertools.product(model_config_list, ["b1","b2","otc","sf"])]
-        # full_list = []
-        # for model_sim in client.gather(L1):
-        #     full_list.append(model_sim)
-        # del L1
-        # # process each models regional simulation outputs towards harmonizable database
-        # L2 = [client.submit(xrfx.process_simulation_files, f, config) for f in full_list] 
-        # wait(L2)
-        # del full_list, L2
-        # # aggregate each models regional simulation outputs to a single file 
-        # L_rsims = [client.submit(xrfx.aggregate_regional_sims, f) for f in model_config_list]
-        # wait(L_rsims)
-        # del L_rsims
-        # # harmonize each models combined files to clm5 dimensions by interpolation/extrapolation
-        # L_rm = [client.submit(xrfx.harmonize_regional_models, f) for f in model_config_list]
-        # wait(L_rm)
-        # del L_rm
+        # make folders structure 
+        L0 = [client.submit(xrfx.regional_dir_prep, f) for f in model_config_list]
+        wait(L0)
+        del L0
+        # create list of netcdf files to merge each models regional simulation outputs
+        L1 = [client.submit(xrfx.regional_simulation_files, f) for f in itertools.product(model_config_list, ["b1","b2","otc","sf"])]
+        full_list = []
+        for model_sim in client.gather(L1):
+            full_list.append(model_sim)
+        del L1
+        # process each models regional simulation outputs towards harmonizable database
+        L2 = [client.submit(xrfx.process_simulation_files, f, config) for f in full_list] 
+        wait(L2)
+        del full_list, L2
+        # aggregate each models regional simulation outputs to a single file 
+        L_rsims = [client.submit(xrfx.aggregate_regional_sims, f) for f in model_config_list]
+        wait(L_rsims)
+        del L_rsims
+        # harmonize each models combined files to clm5 dimensions by interpolation/extrapolation
+        L_rm = [client.submit(xrfx.harmonize_regional_models, f) for f in model_config_list]
+        wait(L_rm)
+        del L_rm
         # # aggregate all harmonized models into single zarr database
+        # with open(Path(config['output_dir'] + 'zarr_output/debug_agg_harm_models.txt'), 'w') as pf:
+        #     print('starting final harmonized aggregation', file=pf)
         # L_rm2 = [client.submit(xrfx.aggregate_regional_models, model_config_list)]
         # wait(L_rm2)
         # del L_rm2
@@ -80,8 +83,10 @@ def main():
         # # # wait(L_nc2)
         # # # L_nc3 = [client.submit(xrfx.harmonized_totalresp_netcdf, config)]
         # # # wait(L_nc3)
-        L_nc4 = [client.submit(xrfx.harmonized_netcdf_output, config, agg='monthly', by='model', subset_list=['CLM5-ExIce'])]
-        wait(L_nc4)
+        # wait([client.submit(xrfx.harmonized_netcdf_output, config, agg='daily', by='model', \
+        #     subset_model_list=[], \
+        #     subset_sim_list=['b2'], \
+        #     subset_var_list=['TotalResp','10cm_SoilTemp'])])
         # # # del L_nc1, L_nc2, L_nc3, L_nc4
         # # # graph regional outputs from harmonized zarr database
         # # var_list = ['GPP','TotalResp','SoilTemp','ALT','WTD','NEE','SoilC','SoilN','CN']
@@ -92,12 +97,12 @@ def main():
         # # #wait(L_g1)
         # # #del L_g1
 
-        # graph outputs, create site selected cells output
-        var_list = ['GPP','TotalResp','10cm_SoilTemp','ALT','WTD','NEE','SoilC','SoilN','CN']
-        L_g2 = [client.submit(xrfx.warming_treatment_effect_graphs, [config, var_list])]
-        wait(L_g2)
-        del L_g2
-        # spin down client
+        # # graph outputs, create site selected cells output
+        # var_list = ['AutoResp','HeteroResp','TotalResp','GPP','NEE','AirTemp','VegTemp', \
+        #             '10cm_SoilTemp','10cm_SoilMoist','ALT','WTD','SoilC','SoilN','CN']
+        # #wait([client.submit(xrfx.warming_treatment_effect_graphs, [config, var_list])])
+        # wait([client.submit(xrfx.warming_treatment_data, [config, var_list])])
+        # # spin down client
         while len(client.scheduler_info()['workers']) < 1:
             time.sleep(1)
         client.retire_workers()

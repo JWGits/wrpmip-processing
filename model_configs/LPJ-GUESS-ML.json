@@ -14,22 +14,31 @@
 	"has_otc": "True",
 	"has_sf": "True",
 	"subset_vars": [
+		"Tair",
 		"GPP",
+		"AutoResp",
+		"HeteroResp",
 		"TotalResp",
 		"SoilTemp",
 		"ALT",
-		"SoilC",
-		"SoilN",
-		"CN",
+		"SoilC_Total",
+		"SoilN_Total",
+		"CN_Total",
 		"WTD"
 	],
 	"rename_subset": {
+		"Tair": "AirTemp" 
 	},
 	"data_units": {
+		"AirTemp": {"scale_type": "add", "scale_value": -273.15, "units": "C"},
+		"AutoResp": {"scale_type": "multiply", "scale_value": 1000.0, "units": "gC/m^2/s"},
+		"HeteroResp": {"scale_type": "multiply", "scale_value": 1000.0, "units": "gC/m^2/s"},
 		"TotalResp": {"scale_type": "multiply", "scale_value": 1000.0, "units": "gC/m^2/s"},
 		"GPP": {"scale_type": "multiply", "scale_value": 1000.0, "units": "gC/m^2/s"},
-		"SoilC": {"scale_type": "multiply", "scale_value": 1000.0, "units": "gC/m^2"},
-		"SoilN": {"scale_type": "multiply", "scale_value": 1000.0, "units": "gN/m^2"}
+		"SoilC_Total": {"scale_type": "multiply", "scale_value": 1000.0, "units": "gC/m^2"},
+		"SoilN_Total": {"scale_type": "multiply", "scale_value": 1000.0, "units": "gN/m^2"},
+		"ALT": {"scale_type": "multiply", "scale_value": 0.01, "units": "m"},
+		"SoilTemp": {"scale_type": "add", "scale_value": -273.15, "units": "C"}
 	},
 	"coords_units": {},
 	"soil_depths": [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]
