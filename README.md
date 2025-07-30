@@ -18,9 +18,7 @@ mpirun -np 40 --map-by numa --bind-to core python3 xr_regional.py $1
 
 The above code maps 40 processes to cores by numa setup but this will need to be tested on each HPC for proper use and edited to align with the SBATCH resource request. Inputs added to the command line after the bash script in an sbatch call are stored as $1 through $x and used here to pass the JSON config file through to the python call.
 
-Within the python code a Dask scheduler, Dask client, and Dask workers are created based on MPI rank (in that order) using the dask_mpi.initialize() function. A Dask cluster is subsequently created within the python code using the dask.distributed.Client() function and all work to be done is parallelized using Dask's client.submit() framework. Functions are currently all listed in xr_functions.py and read in by an import statement at the top of the python script. Separating functions into groups based on their use in different python scripts is planned but not complete.  
-
-Figures and graphs are generally created using plotnine, which is a nearly complete port of R's ggplot2 package into python. The graphing functions used are currently inefficient as they load and manipulate data for each figure. This will eventually be refactored into another processing function preceeding the graphing function calls when time permits.
+Within the python code a Dask scheduler, Dask client, and Dask workers are created based on MPI rank (in that order) using the dask_mpi.initialize() function. A Dask cluster is subsequently created within the python code using the dask.distributed.Client() function and all work to be done is parallelized using Dask's client.submit() framework. Functions are currently all listed in xr_functions.py and read in by an import statement at the top of the python script. Separating functions into groups based on their use in different python scripts is planned.  
 
 ## Monitoring the dask cluster
 
