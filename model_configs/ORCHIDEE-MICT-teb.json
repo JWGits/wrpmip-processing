@@ -34,7 +34,7 @@
 		"rh": "HeteroResp",
 		"ptn": "SoilTemp",
 		"gpp": "GPP",
-		"alt": "ALT",
+		"alt": "ThawDepth",
 		"cSoil": "SoilC_Total"
 	},
 	"data_units": {

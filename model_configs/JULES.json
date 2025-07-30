@@ -30,6 +30,7 @@
 		"SoilN_vr"
 	],
 	"rename_subset": {
+		"ALT": "ThawDepth",
 		"Tair": "AirTemp",
 		"TotSoilCarb":"SoilC_Total",
 		"TotSoilN":"SoilN_Total",

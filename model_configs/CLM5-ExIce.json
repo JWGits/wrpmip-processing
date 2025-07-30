@@ -38,7 +38,7 @@
 		"SOILC_vr": "SoilC_Layers",
 		"TOTSOMC_1m": "SoilC_1m",
 		"levgrnd": "SoilDepth",
-		"ALTMAX": "ALT",
+		"ALTMAX": "ThawDepth",
 		"ZWT_PERCH": "WTD"
 	},
 	"data_units": {

@@ -3332,9 +3332,9 @@ def regional_simulation_files(input_list):
     # read all CRUJRA input file names from reanalysis directory
     dir_name = sim_type + '_dir'
     sim_str = sim_type + '_str'
-    if config['model_name'] not in ['ecosys','ELM1-ECA','ORCHIDEE-MICT-teb','JULES']:
+    if config['model_name'] not in ['ecosys','ELM-ECA','ORCHIDEE-MICT-teb','JULES']:
         sim_files = sorted(glob.glob("{}*{}*.nc".format(config[dir_name], config[sim_str])))
-    elif config['model_name'] in ['ELM1-ECA','JULES']:
+    elif config['model_name'] in ['ELM-ECA','JULES']:
         sim_files = sorted(glob.glob("{}*{}*.zarr".format(config[dir_name], config[sim_str])))
     elif config['model_name'] in ['ecosys']:
         # deal with non-standard file and variable chunking in ecosys
@@ -3608,7 +3608,7 @@ def rechunk_elmeca(input_list):
     sim_files = sorted(glob.glob("{}*{}*.nc".format(config[dir_name], config[sim_str])))
     #sim_files = [x for x in sim_files if 'Soil' in x]
     with open(Path(config['output_dir'] + 'debug_elmeca.txt'), 'w') as pf:
-        print('LPJ-GUESS-ML rechunking...', file=pf)
+        print('ELM-ECA rechunking...', file=pf)
     with dask.config.set(**{'array.slicing.split_large_chunks': False}):
         # function to chop up file input list
         def chunk_gen(lst, n):
@@ -4129,7 +4129,7 @@ def process_simulation_files(input_list, top_config):
                         ds = ds.drop_vars(['L_vegnpp','G_mskt'])
                         with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
                             print(ds, file=pf)
-                    elif config['model_name'] == 'ELM1-ECA':
+                    elif config['model_name'] == 'ELM-ECA':
                         # open zarr files
                         ds = xr.open_mfdataset(sim_files, parallel=True, engine="zarr", preprocess=partial_time, **zarr_kwargs)
                         # check files
@@ -4444,11 +4444,11 @@ def process_simulation_files(input_list, top_config):
                     print('calendar changed', file=pf)
                     print(ds, file=pf)
             # multindex and unstack lndgrids so that lat lon become dimensions instead
-            if config['model_name'] in ['ELM2-NGEE']:
+            if config['model_name'] in ['ELM-RD']:
                 ds = ds.set_index(lndgrid=['lat','lon'])
                 ds = ds.unstack() 
             # convert lon from -180-180 to 0-360
-            if config['model_name'] in ['ELM2-NGEE', 'ecosys', 'CLASSIC', 'LPJ-GUESS-ML', 'LPJ-GUESS', 'ORCHIDEE-MICT', 'ORCHIDEE-MICT-teb','JULES']:
+            if config['model_name'] in ['ELM-RD', 'ecosys', 'CLASSIC', 'LPJ-GUESS-ML', 'LPJ-GUESS', 'ORCHIDEE-MICT', 'ORCHIDEE-MICT-teb','JULES']:
                 ds = ds.assign_coords({'lon': (ds.lon % 360)})
                 ds = ds.sortby('lon', ascending=True)
                 with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
@@ -4731,7 +4731,7 @@ def harmonize_regional_models(config):
                 ds_soilc = ds['SoilC_Layers'] * multiplier
                 ds['SoilC_Total'] = ds_soilc.sum(dim='SoilDepth')
                 del ds_soilc
-            if config['model_name'] in ['ELM2-NGEE']:
+            if config['model_name'] in ['ELM-RD']:
                 ds_soiln = ds['SoilN_Layers'] * multiplier
                 ds['SoilN_Total'] = ds_soiln.sum(dim='SoilDepth')
                 del ds_soiln
@@ -4741,11 +4741,11 @@ def harmonize_regional_models(config):
                 dims=['SoilDepth'],
                 coords=[soildepths_1m],
             )
-            if config['model_name'] in ['CLASSIC','ELM2-NGEE','JULES','ORCHIDEE-MICT','ORCHIDEE-MICT-teb']:
+            if config['model_name'] in ['CLASSIC','ELM-RD','JULES','ORCHIDEE-MICT','ORCHIDEE-MICT-teb']:
                 ds_soilc_1m = ds['SoilC_Layers'].isel(SoilDepth=indicies_1m) * multiplier_1m
                 ds['SoilC_1m'] = ds_soilc_1m.sum(dim='SoilDepth')
                 del ds_soilc_1m
-            if config['model_name'] in ['ELM1-ECA','ELM2-NGEE','JULES','ORCHIDEE-MICT','ORCHIDEE-MICT-teb']:
+            if config['model_name'] in ['ELM-ECA','ELM-RD','JULES','ORCHIDEE-MICT','ORCHIDEE-MICT-teb']:
                 ds_soiln_1m = ds['SoilN_Layers'].isel(SoilDepth=indicies_1m) * multiplier_1m
                 ds['SoilN_1m'] = ds_soiln_1m.sum(dim='SoilDepth')
                 del ds_soiln_1m
@@ -5019,6 +5019,11 @@ def harmonized_netcdf_output(config, agg='daily', by='year', subset_model_list=[
         # open file and slice by year in context manager
         read_chunks = {'model': 1,'sim': 1,'time': 73,'SoilDepth': 25,'lat': 60,'lon': 720}
         with xr.open_zarr(zarr_in, chunks=read_chunks, chunked_array_type='dask', use_cftime=True, mask_and_scale=False) as ds:
+            # adjust lon from 0 to 360 to -180 to 180
+            ds = ds.assign_coords({'lon': (((ds.lon + 180) % 360) - 180)})
+            ds = ds.sortby('lon', ascending=True)
+            # rename dims
+            ds = ds.rename({'lat':'latitude', 'lon':'longitude'})
             # subset models if subset_list given
             if subset_model_list:
                 ds = ds.sel(model = subset_model_list) 
@@ -5031,55 +5036,171 @@ def harmonized_netcdf_output(config, agg='daily', by='year', subset_model_list=[
                 ds = ds.resample(time='MS').mean()
                 ds = ds.transpose('model','sim','time','SoilDepth','lat','lon', missing_dims='ignore')
                 ds = ds.chunk({'model':1, 'sim':1, 'time':-1, 'SoilDepth': 25, 'lat':60, 'lon':720})
-            # remove encoding issues caused by zarr for netcdf
+            # create empty encoding dictionary
+            encoding_options = dict()
+            # set fill value
+            fill_value = 1e20
+            # loop through existing variables
             for var in ds:
+                # clear variable encoding and attributes
                 ds[var].drop_encoding()
                 ds[var].drop_attrs()
+                # set individual attribute and encoding for each variable
                 if var == 'AutoResp':
-                    ds[var] = ds[var].assign_attrs(description='Autotrophic ecosystem respiration rate (always positive)', units='gC/m2/day', _FillValue='nan')
+                    # variable attributes
+                    ds[var] = ds[var].assign_attrs(standard_name='Autotrophic Respiration', \
+                                                   description='Autotrophic ecosystem respiration rate (always positive)', \
+                                                   units='gC m-2 d-1', missing_value=fill_value)
+                    # encoding for individual variable
+                    encoding_options[var] = {zlib=config['nc_write']['zlib'], shuffle=config['nc_write']['shuffle'],\
+                                             complevel=config['nc_write']['complevel'], _FillValue=fill_value, dtype='float32'}
                 elif var == 'HeteroResp':
-                    ds[var] = ds[var].assign_attrs(description='Heterotrophic ecosystem respiration rate (always positive)', units='gC/m2/day', _FillValue='nan')
+                    # variable attributes
+                    ds[var] = ds[var].assign_attrs(standard_name='Heterotrophic Respiration', \
+                                                   description='Heterotrophic ecosystem respiration rate (always positive)', \
+                                                   units='gC m-2 d-1', missing_value=fill_value)
+                    # encoding for individual variable
+                    encoding_options[var] = {zlib=config['nc_write']['zlib'], shuffle=config['nc_write']['shuffle'],\
+                                             complevel=config['nc_write']['complevel'], _FillValue=fill_value, dtype='float32'}
                 elif var == 'TotalResp':
-                    ds[var] = ds[var].assign_attrs(description='Total ecosystem respiration rate (always positive)', units='gC/m2/day', _FillValue='nan')
+                    # variable attributes
+                    ds[var] = ds[var].assign_attrs(standard_name='Ecosystem Respiration', \
+                                                   description='Total ecosystem respiration rate (always positive)', \
+                                                   units='gC m-2 d-1', missing_value=fill_value)
+                    # encoding for individual variable
+                    encoding_options[var] = {zlib=config['nc_write']['zlib'], shuffle=config['nc_write']['shuffle'],\
+                                             complevel=config['nc_write']['complevel'], _FillValue=fill_value, dtype='float32'}
                 elif var == 'GPP':
-                    ds[var] = ds[var].assign_attrs(description='Gross primary productivity rate (always positive)', units='gC/m2/day', _FillValue='nan')
+                    # variable attributes
+                    ds[var] = ds[var].assign_attrs(standard_name='Gross Primary Production', \
+                                                   description='Gross primary productivity rate (always positive)', \
+                                                   units='gC m-2 d-1', missing_value=fill_value)
+                    # encoding for individual variable
+                    encoding_options[var] = {zlib=config['nc_write']['zlib'], shuffle=config['nc_write']['shuffle'],\
+                                             complevel=config['nc_write']['complevel'], _FillValue=fill_value, dtype='float32'}
                 elif var == 'NEE':
-                    ds[var] = ds[var].assign_attrs(description='Net ecosystem exchange rate (positive to atmosphere)', units='gC/m2/day', _FillValue='nan')
+                    # variable attributes
+                    ds[var] = ds[var].assign_attrs(standard_name='Net Ecosystem Exchange', \
+                                                   description='Net ecosystem exchange rate (positive to atmosphere)', \
+                                                    units='gC m-2 d-1', missing_value=fill_value)
+                    # encoding for individual variable
+                    encoding_options[var] = {zlib=config['nc_write']['zlib'], shuffle=config['nc_write']['shuffle'],\
+                                             complevel=config['nc_write']['complevel'], _FillValue=fill_value, dtype='float32'}
                 elif var == 'SoilMoist':
-                    ds[var] = ds[var].assign_attrs(description='Soil moisture by layer', units='gH2O/m2', _FillValue='nan')
+                    # variable attributes
+                    ds[var] = ds[var].assign_attrs(standard_name='Soil Moisture', \
+                                                   description='Soil moisture by layer', units='gH2O m-2', missing_value=fill_value)
+                    # encoding for individual variable
+                    encoding_options[var] = {zlib=config['nc_write']['zlib'], shuffle=config['nc_write']['shuffle'],\
+                                             complevel=config['nc_write']['complevel'], _FillValue=fill_value, dtype='float32'}
                 elif var == 'SoilTemp':
-                    ds[var] = ds[var].assign_attrs(description='Soil temperature by layer', units='°C', _FillValue='nan')
+                    # variable attributes
+                    ds[var] = ds[var].assign_attrs(standard_name='Soil Temperature', \
+                                                   description='Soil temperature by layer', units='°C', missing_value=fill_value)
+                    # encoding for individual variable
+                    encoding_options[var] = {zlib=config['nc_write']['zlib'], shuffle=config['nc_write']['shuffle'],\
+                                             complevel=config['nc_write']['complevel'], _FillValue=fill_value, dtype='float32'}
                 elif var == '10cm_SoilTemp':
-                    ds[var] = ds[var].assign_attrs(description='Soil temperature, 10cm weighted mean', units='°C', _FillValue='nan')
+                    # variable attributes
+                    ds[var] = ds[var].assign_attrs(standard_name='10cm Soil Temperature' , \
+                                                   description='Soil temperature, 10cm weighted mean', \
+                                                   units='°C', missing_value=fill_value)
                     ds = ds.rename({"10cm_SoilTemp":"SoilTemp_10cm"})
+                    # encoding for individual variable
+                    encoding_options[var] = {zlib=config['nc_write']['zlib'], shuffle=config['nc_write']['shuffle'],\
+                                             complevel=config['nc_write']['complevel'], _FillValue=fill_value, dtype='float32'}
                 elif var == '10cm_SoilMoist':
-                    ds[var] = ds[var].assign_attrs(description='Soil Moisture, 10cm weighted mean', units='g/m2', _FillValue='nan')
+                    # variable attributes
+                    ds[var] = ds[var].assign_attrs(standard_name='10cm Soil Moisture', \
+                                                   description='Soil Moisture, 10cm weighted mean', \
+                                                   units='g m-2', missing_value=fill_value)
                     ds = ds.rename({"10cm_SoilMoist":"SoilMoist_10cm"})
+                    # encoding for individual variable
+                    encoding_options[var] = {zlib=config['nc_write']['zlib'], shuffle=config['nc_write']['shuffle'],\
+                                             complevel=config['nc_write']['complevel'], _FillValue=fill_value, dtype='float32'}
                 elif var == 'AirTemp':
-                    ds[var] = ds[var].assign_attrs(description='Near-surface air temperature', units='°C', _FillValue='nan')
+                    # variable attributes
+                    ds[var] = ds[var].assign_attrs(standard_name='Air Temperature', \
+                                                   description='Near-surface air temperature', units='°C', missing_value=fill_value)
+                    # encoding for individual variable
+                    encoding_options[var] = {zlib=config['nc_write']['zlib'], shuffle=config['nc_write']['shuffle'],\
+                                             complevel=config['nc_write']['complevel'], _FillValue=fill_value, dtype='float32'}
                 elif var == 'VegTemp':
-                    ds[var] = ds[var].assign_attrs(description='Vegetation temperature', units='°C', _FillValue='nan')
-                elif var == 'ALT':
-                    ds[var] = ds[var].assign_attrs(description='Active layer thickness (positive into the soil)', units='m', _FillValue='nan')
+                    # variable attributes
+                    ds[var] = ds[var].assign_attrs(standard_name='Vegetation Temperature'. \
+                                                   description='Vegetation temperature', units='°C', missing_value=fill_value)
+                    # encoding for individual variable
+                    encoding_options[var] = {zlib=config['nc_write']['zlib'], shuffle=config['nc_write']['shuffle'],\
+                                             complevel=config['nc_write']['complevel'], _FillValue=fill_value, dtype='float32'}
+                elif var == 'ThawDepth':
+                    # variable attributes
+                    ds[var] = ds[var].assign_attrs(standard_name='Thaw Depth', \
+                                                   description='Instantaneous depth of soil thaw (positive into the soil)', \
+                                                   units='m', missing_value=fill_value)
+                    # encoding for individual variable
+                    encoding_options[var] = {zlib=config['nc_write']['zlib'], shuffle=config['nc_write']['shuffle'],\
+                                             complevel=config['nc_write']['complevel'], _FillValue=fill_value, dtype='float32'}
                 elif var == 'WTD':
-                    ds[var] = ds[var].assign_attrs(description='Water table depth (perched and non-perched models combined)', units='m', _FillValue='nan')
+                    # variable attributes
+                    ds[var] = ds[var].assign_attrs(standard_name='Water Table Depth', \
+                                                   description='Water table depth (both perched and non-perched depending on model)', \
+                                                   units='m', missing_value=fill_value)
+                    # encoding for individual variable
+                    encoding_options[var] = {zlib=config['nc_write']['zlib'], shuffle=config['nc_write']['shuffle'],\
+                                             complevel=config['nc_write']['complevel'], _FillValue=fill_value, dtype='float32'}
                 elif var == 'SoilC_Total':
-                    ds[var] = ds[var].assign_attrs(description='Total soil column soil organic carbon', units='gC/m2', _FillValue='nan')
+                    # variable attributes
+                    ds[var] = ds[var].assign_attrs(standard_name='Total Soil Organic Carbon', \
+                                                   description='Cummulative soil organic carbon of entire soil column', \
+                                                   units='gC m-2', missing_value=fill_value)
+                    # encoding for individual variable
+                    encoding_options[var] = {zlib=config['nc_write']['zlib'], shuffle=config['nc_write']['shuffle'],\
+                                             complevel=config['nc_write']['complevel'], _FillValue=fill_value, dtype='float32'}
                 elif var == 'SoilC_1m':
-                    ds[var] = ds[var].assign_attrs(description='Total soil organic carbon to 1 meter depth', units='gC/m2', _FillValue='nan')
+                    # variable attributes
+                    ds[var] = ds[var].assign_attrs(standard_name='1m Soil Organic Carbon', \
+                                                   description='Cummulative soil organic carbon to 1 meter depth', \
+                                                   units='gC m-2', missing_value=fill_value)
+                    # encoding for individual variable
+                    encoding_options[var] = {zlib=config['nc_write']['zlib'], shuffle=config['nc_write']['shuffle'],\
+                                             complevel=config['nc_write']['complevel'], _FillValue=fill_value, dtype='float32'}
                 elif var == 'SoilN_Total':
-                    ds[var] = ds[var].assign_attrs(description='Total soil column soil organic nitrogen', units='gC/m2', _FillValue='nan')
+                    # variable attributes
+                    ds[var] = ds[var].assign_attrs(standard_name='Total Soil Organic Nitrogen', \
+                                                   description='Cummulative soil organic nitrogen of entire soil column', \
+                                                   units='gC m-2', missing_value=fill_value)
+                    # encoding for individual variable
+                    encoding_options[var] = {zlib=config['nc_write']['zlib'], shuffle=config['nc_write']['shuffle'],\
+                                             complevel=config['nc_write']['complevel'], _FillValue=fill_value, dtype='float32'}
                 elif var == 'SoilN_1m':
-                    ds[var] = ds[var].assign_attrs(description='Total soil organic nitrogen to 1 meter depth', units='gC/m2', _FillValue='nan')
+                    # variable attributes
+                    ds[var] = ds[var].assign_attrs(standard_name='1m Soil Organic Nitrogen', \
+                                                   description='Cummulative soil organic nitrogen to 1 meter depth', \
+                                                   units='gC m-2', missing_value=fill_value)
+                    # encoding for individual variable
+                    encoding_options[var] = {zlib=config['nc_write']['zlib'], shuffle=config['nc_write']['shuffle'],\
+                                             complevel=config['nc_write']['complevel'], _FillValue=fill_value, dtype='float32'}
                 elif var == 'CN_Total':
-                    ds[var] = ds[var].assign_attrs(description='Carbon to nitrogen ratio of entire soil column', units='unitless', _FillValue='nan')
+                    # variable attributes
+                    ds[var] = ds[var].assign_attrs(standard_name='Total CN Ratio', \
+                                                   description='Carbon to nitrogen ratio of total soil column carbon and nitrogen values', \
+                                                   units='unitless', missing_value=fill_value)
+                    # encoding for individual variable
+                    encoding_options[var] = {zlib=config['nc_write']['zlib'], shuffle=config['nc_write']['shuffle'],\
+                                             complevel=config['nc_write']['complevel'], _FillValue=fill_value, dtype='float32'}
                 elif var == 'CN_1m':
-                    ds[var] = ds[var].assign_attrs(description='Carbon to nitrogen ratio of soil to 1m depth', units='unitless', _FillValue='nan')
+                    # variable attributes
+                    ds[var] = ds[var].assign_attrs(standard_name='1m CN ratio', \
+                                                   description='Carbon to nitrogen ratio of 1m soil carbon and nitrogen values', \
+                                                   units='unitless', missing_value=fill_value)
+                    # encoding for individual variable
+                    encoding_options[var] = {zlib=config['nc_write']['zlib'], shuffle=config['nc_write']['shuffle'],\
+                                             complevel=config['nc_write']['complevel'], _FillValue=fill_value, dtype='float32'}
             ds.attrs = {
                 'Date': date.today().strftime("%B %d, %Y"),
                 'Creator': 'Jon M Wells (jon.wells@nau.edu)',
                 'Project': 'The Warming Permafrost Model Intercomparison Project (WrPMIP)',
-                'Description': 'Monthly mean outputs from harmonized daily database'                  
+                'Description': 'Subset of monthly mean outputs from harmonized daily database'                  
             }
             ds = ds.persist()
             ds_list = []
@@ -5087,16 +5208,19 @@ def harmonized_netcdf_output(config, agg='daily', by='year', subset_model_list=[
             if by == 'year':
                 for year in np.arange(2000,2022):
                     ds_tmp = ds.sel(time=slice(f"{year}-01-01", f"{year}-12-31"))
-                    ncdf_out = config['output_dir'] + 'netcdf_output/WrPMIP_Pan-Arctic_harmonized_' + str(agg) + '_means_' + str(year) + '.nc'
+                    ncdf_out = config['output_dir'] + 'netcdf_output/WrPMIP_Pan-Arctic_' + str(agg) + '_means_' + str(year) + '.nc'
                     ds_list.append(ds_tmp)
                     ncdf_list.append(ncdf_out)
             elif by == 'model':
                 for model in ds.model.values:
-                    ds_tmp = ds.sel(model=model)
-                    ncdf_out = config['output_dir'] + 'netcdf_output/WrPMIP_Pan-Arctic_harmonized_' + str(agg) + '_means_' + str(model) + '.nc'
-                    ds_list.append(ds_tmp)
-                    ncdf_list.append(ncdf_out)
-            xr.save_mfdataset(ds_list, ncdf_list, mode='w', format=config['nc_write']['format'], engine=config['nc_write']['engine'])
+                    for sim in ds.sim.values:
+                        for var in ds:
+                            ds_tmp = ds[var].sel(model=model, sim=sim)
+                            ncdf_out = config['output_dir'] + 'netcdf_output/WrPMIP_' + str(model) + '_' + str(sim) + '_' + str(var) + '_' + str(agg) + '_means.nc'
+                            ds_list.append(ds_tmp)
+                            ncdf_list.append(ncdf_out)
+            xr.save_mfdataset(ds_list, ncdf_list, mode='w', encoding=encoding_options, \
+                              format=config['nc_write']['format'], engine=config['nc_write']['engine'])
     except Exception as error:
         with open(Path(config['output_dir'] + 'netcdf_output/debug_model_netcdfs.txt'), 'a') as pf:
             print(error, file=pf)

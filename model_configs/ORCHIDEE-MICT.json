@@ -27,6 +27,7 @@
 		"ALT"
 	],
 	"rename_subset": {
+		"ALT": "ThawDepth",
 		"Tair": "AirTemp",
 		"latitude": "lat",
 		"longitude": "lon",

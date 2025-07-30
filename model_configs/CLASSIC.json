@@ -28,6 +28,7 @@
 		"nSoil"
 	],
 	"rename_subset": {
+		"ALT": "ThawDepth",
 		"Tair": "AirTemp",
 		"Tcan": "VegTemp",
 		"nsoil": "SoilDepth",

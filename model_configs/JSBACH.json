@@ -30,7 +30,7 @@
 		"soil_temperature": "SoilTemp",
 		"belowsurface": "SoilDepth",
 		"TotSoilCarb": "SoilC_Total",
-		"thaw_depth": "ALT",
+		"thaw_depth": "ThawDepth",
 		"water_table": "WTD"
 	},
 	"data_units": {

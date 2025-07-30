@@ -32,7 +32,7 @@
 		"longitude": "lon",
 		"latitude": "lat",
 		"gnd": "SoilDepth",
-		"L_activelt": "ALT",
+		"L_activelt": "ThawDepth",
 		"L_soilcarb": "SoilC_Total",
 		"L_soilcarbD": "SoilC_Layers"
 	},

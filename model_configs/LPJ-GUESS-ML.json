@@ -26,6 +26,7 @@
 		"WTD"
 	],
 	"rename_subset": {
+		"ALT": "ThawDepth",
 		"Tair": "AirTemp" 
 	},
 	"data_units": {
@@ -36,7 +37,7 @@
 		"GPP": {"scale_type": "multiply", "scale_value": 1000.0, "units": "gC/m^2/s"},
 		"SoilC_Total": {"scale_type": "multiply", "scale_value": 1000.0, "units": "gC/m^2"},
 		"SoilN_Total": {"scale_type": "multiply", "scale_value": 1000.0, "units": "gN/m^2"},
-		"ALT": {"scale_type": "multiply", "scale_value": 0.01, "units": "m"},
+		"ThawDepth": {"scale_type": "multiply", "scale_value": 0.01, "units": "m"},
 		"SoilTemp": {"scale_type": "add", "scale_value": -273.15, "units": "C"}
 	},
 	"coords_units": {},

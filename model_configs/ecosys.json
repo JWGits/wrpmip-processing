@@ -23,7 +23,7 @@
 		"SoilC_Total"
 	],
 	"rename_subset": {
-		"ACTV_LYR": "ALT",
+		"ACTV_LYR": "ThawDepth",
 		"ECO_GPP": "GPP",
 		"ECO_RH": "HeteroResp"
 	},
@@ -32,7 +32,7 @@
 		"HeteroResp":{"scale_type": "multiply", "scale_value": 0.00001157407, "units": "g C m-2 s-1"},
 		"TotalResp":{"scale_type": "multiply", "scale_value": 0.00001157407, "units": "g C m-2 s-1"},
 		"GPP":{"scale_type": "multiply", "scale_value": 0.00001157407, "units": "g C m-2 s-1"},
-		"ALT":{"scale_type": "multiply", "scale_value": -1, "units": "m"}
+		"ThawDepth":{"scale_type": "multiply", "scale_value": -1, "units": "m"}
 	},
 	"coords_units": {},
 	"soil_depths": [0.01, 0.04, 0.07, 0.14, 0.25, 0.38, 0.51, 0.85, 1.2, 2, 2.5]
