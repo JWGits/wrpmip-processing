@@ -34,7 +34,7 @@
 		"gnd": "SoilDepth",
 		"L_activelt": "ALT",
 		"L_soilcarb": "SoilC_Total",
-		"L_soilcarbD": "SoilCi_Layers"
+		"L_soilcarbD": "SoilC_Layers"
 	},
 	"data_units": {
 		"AutoResp": {"scale_type": "multiply", "scale_value": 1000.0, "units": "gC/m^2/s"},

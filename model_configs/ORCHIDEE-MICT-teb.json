@@ -14,7 +14,7 @@
 	"has_otc": "True",
 	"has_sf": "True",
 	"subset_sechiba": ["ptn","gpp","tair"],	
-	"subset_stomate": ["ra","rh","alt","cSoil"],	
+	"subset_stomate": ["ra","rh","alt","cSoil","deepC_a","deepC_s","deepC_p"],	
 	"subset_vars": [
 		"tair",
 		"ra",

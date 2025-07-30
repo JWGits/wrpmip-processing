@@ -20,7 +20,7 @@
 		"TotalResp",
 		"SoilTemp",
 		"ACTV_LYR",
-		"SoilC"
+		"SoilC_Total"
 	],
 	"rename_subset": {
 		"ACTV_LYR": "ALT",

@@ -27,15 +27,14 @@
 		"TotSoilCarb",
 		"TotSoilN",
 		"SoilC_vr",
-		"SoilN_vr",
-		"CN_Total"
+		"SoilN_vr"
 	],
 	"rename_subset": {
 		"Tair": "AirTemp",
 		"TotSoilCarb":"SoilC_Total",
 		"TotSoilN":"SoilN_Total",
 		"SoilC_vr":"SoilC_Layers",
-		"SoilN_vr":"SoilC_Layers"
+		"SoilN_vr":"SoilN_Layers"
 	},
 	"data_units": {
 		"AirTemp": {"scale_type": "add", "scale_value": -273.15, "units": "C"},

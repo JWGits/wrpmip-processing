@@ -3986,13 +3986,13 @@ def preprocess_ORCHIDEE_MICT_teb(ds, config, sim_type):
                 print(dsc.encoding['source'], file=pf)
         # subset stomate
         dsc = dsc[config['subset_stomate']]
-        # tame mean of ALT depth across PFTs
+        # take mean of ALT depth across PFTs
         dsc['alt'] = dsc['alt'].mean(dim='veget', keep_attrs=True, skipna=True)
         # remove chunking
         dsc = dsc.chunk({'time': -1})
     # assign same soil depths as other ORCHIDEE-MICT outputs, stomate has integers, sechiba has slightly diff values from other submission
     dsc = dsc.assign_coords({'SoilDepth': config['soil_depths']})
-    # take sum of carbon fluxes from all PFTs
+    # take sum of everything else (e.g. fluxes, pools)
     dsc = dsc.sum(dim='veget', keep_attrs=True, skipna=True)
     # change time from seconds since 2002-01-01 00:00:00 to cftime
     dsc = xr.decode_cf(dsc, use_cftime=True)
@@ -4135,11 +4135,17 @@ def process_simulation_files(input_list, top_config):
                         # check files
                         with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
                             print(ds, file=pf)
-                        # calculate CN
-                        ds['CN_Total'] = ds['TOTSOMC'] / ds['TOTSOMN']
+                        # join multiple vertically resolved soil pools
+                        ds['SoilN_Layers'] = ds['SOIL1N_vr'] + ds['SOIL2N_vr'] + ds['SOIL3N_vr']
+                        # drop vr soiln variables
+                        ds = ds.drop_vars(['SOIL1N_vr','SOIL2N_vr','SOIL3N_vr'])
                     elif config['model_name'] == 'ORCHIDEE-MICT':
                         partial_ORCHIDEE_MICT = partial(preprocess_ORCHIDEE_MICT, config=config, sim_type=sim_type)
                         ds = xr.open_mfdataset(sim_files, parallel=True, engine=engine, chunks=chunk_read, preprocess=partial_ORCHIDEE_MICT, **kwargs)
+                        # combine vertically resolved soil pool variables
+                        ds['SoilC_Layers'] = ds['deepC_a'] + ds['deepC_s'] + ds['deepC_p']
+                        # drop individual pools
+                        ds = ds.drop_vars(['deepC_a','deepC_s','deepC_p'])
                     elif config['model_name'] == 'ORCHIDEE-MICT-teb':
                         partial_ORCHIDEE_MICT_teb = partial(preprocess_ORCHIDEE_MICT_teb, config=config, sim_type=sim_type)
                         ds1 = xr.open_mfdataset(sim_files[0], parallel=True, engine=engine, chunks=chunk_read, preprocess=partial_ORCHIDEE_MICT_teb, **kwargs)
@@ -4152,8 +4158,10 @@ def process_simulation_files(input_list, top_config):
                         ds = ds1.merge(ds2)
                         # calculate TotalResp
                         ds['TotalResp'] = ds['rh'] + ds['ra']
-                        # remove ra/rh
-                        #ds = ds.drop_vars(['ra','rh'])
+                        # combine vertically resolved soil pool variables
+                        ds['SoilC_Layers'] = ds['deepC_a'] + ds['deepC_s'] + ds['deepC_p']
+                        # drop individual pools
+                        ds = ds.drop_vars(['deepC_a','deepC_s','deepC_p'])
                         # debug dataset
                         with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
                             print('combined dataset: ', file=pf)
@@ -4200,13 +4208,10 @@ def process_simulation_files(input_list, top_config):
                         ds = xr.open_mfdataset(sim_files, parallel=True, engine="zarr", chunks='auto', preprocess=partial_JULES, **zarr_kwargs)
                         # # subset to variables of interest
                         if sim_type in ['b1']:
-                            subset_vars = [item for item in config['subset_vars'] if item not in ['TotSoilCarb','SoilMoist','TotSoilN','SoilC_vr','SoilN_vr','CN']]
+                            subset_vars = [item for item in config['subset_vars'] if item not in ['SoilMoist','TotSoilN','SoilC_vr','SoilN_vr','CN']]
                         else:
-                            #ds['SoilC'] = ds['SoilC_vr'].isel(SoilDepth = list(range(0,7))).integrate('SoilDepth')
-                            #ds['SoilN'] = ds['SoilN_vr'].isel(SoilDepth = list(range(0,7))).integrate('SoilDepth')
-                            ds['CN_Total'] = ds['TotSoilCarb'] / ds['TotSoilN']
                             subset_vars = config['subset_vars']
-                        if sim_type in ['otc','sf']: 
+                        if sim_type in ['b2','otc']: 
                             ds['NEE'] = ds['NEE'].sum(dim='SoilDepth')
                         with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
                             print('open_mfdataset completed', file=pf)
@@ -4220,7 +4225,11 @@ def process_simulation_files(input_list, top_config):
                         with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
                             print('open_mfdataset completed', file=pf)
                             print(ds, file=pf)
-                        # # subset to variables of interest
+                        # invert sign on rh (it's negetive for some reason)
+                        ds['rh'] = ds['rh'] * -1
+                        # calculate TotalResp from ra and now positive rh
+                        ds['TotalResp'] = ds['rh'] + ds['ra']
+                        # subset to variables of interest
                         ds = ds[config['subset_vars']]
                     elif config['model_name'] == 'CLASSIC':
                         # create functools.partial function to pass subset variable through to preprocess
@@ -4230,17 +4239,15 @@ def process_simulation_files(input_list, top_config):
                         ds = ds[config['subset_vars']]
                         with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
                             print(ds, file=pf)
-                        # calculate CN
-                        ds['CN_Total'] = ds['cSoil'] / ds['nSoil']
                     elif config['model_name'] == 'LPJ-GUESS-ML':
                         # create functools.partial function to pass subset variable through to preprocess
                         partial_LPJ_GUESS_ML = partial(preprocess_LPJ_GUESS_ML, config=config, sim_type=sim_type) 
                         # auto merge by variables
                         ds = xr.open_mfdataset(sim_files, parallel=True, engine=engine, chunks=chunk_read, preprocess=partial_LPJ_GUESS_ML, combine='nested', **kwargs)
-                        # calculate CN
+                        # calculate total soil C and N
                         ds['SoilC_Total'] =  ds['C_SOILMETA'] + ds['C_SOILSTRUCT'] + ds['C_SOILFWD'] + ds['C_SOILCWD'] + ds['C_SOILMICRO'] + ds['C_SLOWSOM'] + ds['C_PASSIVESOM']
                         ds['SoilN_Total'] =  ds['N_SOILMETA'] + ds['N_SOILSTRUCT'] + ds['N_SOILFWD'] + ds['N_SOILCWD'] + ds['N_SOILMICRO'] + ds['N_SLOWSOM'] + ds['N_PASSIVESOM']
-                        ds['CN_Total'] = ds['SoilC_Total'] / ds['SoilN_Total']
+                        # subset vars
                         ds = ds[config['subset_vars']]
                         with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
                             print(ds, file=pf)
@@ -4322,7 +4329,10 @@ def process_simulation_files(input_list, top_config):
                         ds = xr.merge([ds, ds5, ds6]) 
                         # add all soil layer variables to SoilC
                         ds['SoilC_Total'] = ds['SOC_1'] + ds['SOC_2'] + ds['SOC_3'] + ds['SOC_4'] + ds['SOC_5'] + ds['SOC_6'] + \
-                                    ds['SOC_7'] + ds['SOC_8'] + ds['SOC_9'] + ds['SOC_10'] + ds['SOC_11'] 
+                                    ds['SOC_7'] + ds['SOC_8'] + ds['SOC_9'] + ds['SOC_10'] + ds['SOC_11']
+                        # approximate 1m calculation
+                        ds['SoilC_1m'] = ds['SOC_1'] + ds['SOC_2'] + ds['SOC_3'] + ds['SOC_4'] + ds['SOC_5'] + ds['SOC_6'] + \
+                                    ds['SOC_7'] + ds['SOC_8'] + ((15/35)*ds['SOC_9'])
                     elif sim_type in ['otc','sf']:
                         ds['SoilC_Total'] = ds['ECO_RH']
                         ds['SoilC_Total'].loc[:] = np.nan
@@ -4356,13 +4366,20 @@ def process_simulation_files(input_list, top_config):
                     ds['SoilC_Layers'] = ds['SOIL1C_vr'] + ds['SOIL2C_vr'] + ds['SOIL3C_vr'] + ds['SOIL4C_vr']   
                     ds['SoilN_Layers'] = ds['SOIL1N_vr'] + ds['SOIL2N_vr'] + ds['SOIL3N_vr'] + ds['SOIL4N_vr']   
                     ds['SoilC_Total'] = ds['TOTSOMC']
-                    ds['SoilN_Total'] = ds['SOIL1N'] + ds['SOIL2N'] + ds['SOIL3N'] + ds['SOIL4N']
-                    ds['CN_Total'] = ds['SoilC_Total'] / ds['SoilN_Total']
-                    ds['CN_Layers'] = ds['SoilC_Layers'] / ds['SoilN_Layers']
                     # remove variables used for calculation
                     ds = ds.drop_vars(['SOIL1C_vr','SOIL2C_vr','SOIL3C_vr','SOIL4C_vr', \
-                                       'SOIL1N_vr','SOIL2N_vr','SOIL3N_vr','SOIL4N_vr', \
-                                       'TOTSOMC','SOIL1N','SOIL2N','SOIL3N','SOIL4N'])
+                                       'SOIL1N_vr','SOIL2N_vr','SOIL3N_vr','SOIL4N_vr','TOTSOMC'])
+                    # fix any remaining variables with levdcmp instead of levgrnd
+                    problem_dim = 'levdcmp'
+                    matching_variables = []
+                    for var_name, data_array in ds.data_vars.items():
+                        if problem_dim in data_array.dims:
+                            matching_variables.append(var_name)
+                    ds_problem_vars = ds[matching_variables]
+                    ds = ds.drop_dims(problem_dim)
+                    ds_problem_vars = ds_problem_vars.rename({"levdcmp":"levgrnd"})
+                    ds_problem_vars = ds_problem_vars.assign_coords({"levgrnd": ds.coords['levgrnd'].values})
+                    ds = ds.merge(ds_problem_vars)
             # rename variables
             ds = ds.rename(config['rename_subset'])
             with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_' + sim_type + '.txt'), 'a') as pf:
@@ -4474,7 +4491,7 @@ def process_simulation_files(input_list, top_config):
                     print(error, file=pf)
                 pass
             for var in missing_vars:
-                if var not in ['SoilTemp','SoilMoist','SoilC_Layers','SoilN_Layers','CN_Layers']:
+                if var not in ['SoilTemp','SoilMoist','SoilC_Layers','SoilN_Layers']:
                     ds[var] = ds_fill_3d
                 else:
                     ds[var] = ds_fill_4d
@@ -4512,7 +4529,7 @@ def process_simulation_files(input_list, top_config):
                 lon_df.to_csv(config['output_dir']+'zarr_output/clm5_lon.csv', index=False, float_format="%g")
                 soild_df.to_csv(config['output_dir']+'zarr_output/clm5_soild.csv', index=False, float_format="%g")
             # convert all soiltemp data variables to float32 to save space
-            varlist_float32 = ['SoilTemp','SoilMoist','SoilC_Layers','SoilN_Layers','CN_Layers']
+            varlist_float32 = ['SoilTemp','SoilMoist','SoilC_Layers','SoilN_Layers']
             for var in ds.data_vars:
                 if var in varlist_float32:
                     ds[var] = ds[var].astype('float32')
@@ -4631,6 +4648,39 @@ def aggregate_regional_sims(config):
                         '/WrPMIP_Pan-Arctic_' + config['model_name'] + '_sims_merged.zarr'
             ds.to_zarr(out_file, encoding=encode, mode="w")
 
+# define function to calculate layer thickness and bottom node interface depths
+def soil_node_calculations(config):
+    # assign empty lists to fill node thickness / bottom interface
+    current_interface = 0
+    node_thickness = []
+    node_interface = []
+    indicies = []
+    node_centers = config['soil_depths']
+    # loop through depth center list
+    for index, node in enumerate(node_centers, start=0):
+        half_thickness = node - current_interface
+        current_interface = node + half_thickness
+        current_thickness = 2 * half_thickness
+        node_thickness.append(current_thickness)
+        node_interface.append(current_interface)
+        if current_interface <= 1:
+            indicies.append(index)
+    # checl index of interface above / below 1m
+    if not indicies:
+        indicies = [0]
+    max_index = max(indicies)
+    last_index = max_index + 1
+    indicies_1m = indicies
+    indicies_1m.append(last_index)
+    soildepths_1m = node_centers[:last_index]
+    # calculate depth from bottom
+    diff_thick = node_thickness[last_index] - node_thickness[max_index]
+    #1m thicknesses to multiple by
+    node_thickness_1m = node_thickness[:max_index]
+    node_thickness_1m.append(diff_thick)        
+    # return thickness and interfaces
+    return node_thickness, node_interface, indicies_1m, soildepths_1m, node_thickness_1m
+
 # output final harmonized pan-arctic regional database
 def harmonize_regional_models(config):
     with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_harmonization.txt'), 'w') as pf:     
@@ -4649,8 +4699,6 @@ def harmonize_regional_models(config):
             with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_harmonization.txt'), 'a') as pf:
                 print('dataset:', file=pf)
                 print(ds, file=pf)
-            # remove attributes
-            #ds.attrs = {}
             # assign model names as new dimension to merge on
             mod = config['model_name']
             mod_dict = config['models']
@@ -4660,6 +4708,52 @@ def harmonize_regional_models(config):
             clm_lon = pd.read_csv(config['output_dir']+'zarr_output/clm5_lon.csv', index_col=False, float_precision='round_trip')['lon']
             clm_lat = pd.read_csv(config['output_dir']+'zarr_output/clm5_lat.csv', index_col=False, float_precision='round_trip')['lat']
             clm_soild =  pd.read_csv(config['output_dir']+'zarr_output/clm5_soild.csv', index_col=False, float_precision='round_trip')['SoilDepth'] 
+            # calculate node thickness, bottom interfaces, Indicies to include for 1m calculation, and node
+            node_thickness, node_interface, indicies_1m, soildepths_1m, node_thickness_1m = soil_node_calculations(config)
+            with open(Path(config['output_dir'] + 'zarr_output/' + config['model_name'] + '/debug_harmonization.txt'), 'a') as pf:
+                print('list of node_thickness:', file=pf)
+                print(node_thickness, file=pf)
+                print('list of node interface:', file=pf)
+                print(node_interface, file=pf)
+                print('list of indexes included to 1m:', file=pf)
+                print(indicies_1m, file=pf)
+                print('list of soil depths included to 1m:', file=pf)
+                print(soildepths_1m, file=pf)
+                print('list of node thickness included to 1m:', file=pf)
+                print(node_thickness_1m, file=pf)
+            # create dataarray to scale all layers by depth thickness for gC / m2
+            multiplier = xr.DataArray(
+                node_thickness,
+                dims=['SoilDepth'],
+                coords=[config['soil_depths']],
+            )
+            if config['model_name'] in ['CLM5','CLM-ExIce']:
+                ds_soilc = ds['SoilC_Layers'] * multiplier
+                ds['SoilC_Total'] = ds_soilc.sum(dim='SoilDepth')
+                del ds_soilc
+            if config['model_name'] in ['ELM2-NGEE']:
+                ds_soiln = ds['SoilN_Layers'] * multiplier
+                ds['SoilN_Total'] = ds_soiln.sum(dim='SoilDepth')
+                del ds_soiln
+            # calculate SoilC_1m and SoilN_1m
+            multiplier_1m = xr.DataArray(
+                node_thickness_1m,
+                dims=['SoilDepth'],
+                coords=[soildepths_1m],
+            )
+            if config['model_name'] in ['CLASSIC','ELM2-NGEE','JULES','ORCHIDEE-MICT','ORCHIDEE-MICT-teb']:
+                ds_soilc_1m = ds['SoilC_Layers'].isel(SoilDepth=indicies_1m) * multiplier_1m
+                ds['SoilC_1m'] = ds_soilc_1m.sum(dim='SoilDepth')
+                del ds_soilc_1m
+            if config['model_name'] in ['ELM1-ECA','ELM2-NGEE','JULES','ORCHIDEE-MICT','ORCHIDEE-MICT-teb']:
+                ds_soiln_1m = ds['SoilN_Layers'].isel(SoilDepth=indicies_1m) * multiplier_1m
+                ds['SoilN_1m'] = ds_soiln_1m.sum(dim='SoilDepth')
+                del ds_soiln_1m
+            # drop SoilC_Layers, and SoilN_Layers to save space
+            ds = ds.drop_vars(['SoilC_Layers','SoilN_Layers'])
+            # Calculate CN_1m and CN_total
+            ds['CN_1m'] = ds['SoilC_1m'] / ds['SoilN_1m']
+            ds['CN_Total'] = ds['SoilC_Total'] / ds['SoilN_Total']
             # subset/inpterplote models to clm5 grid/extent
             if config['model_name'] not in ['CLM5','CLM5-ExIce']:
                 # read in clm lat/lon, make comparison da, interp_like to match grid size/extent
@@ -4671,13 +4765,6 @@ def harmonize_regional_models(config):
                                     lon=(['lon'],clm_lon),
                                     lat=(['lat'],clm_lat)))
                 ds = ds.interp_like(like_array, method="nearest", kwargs={'fill_value': np.nan})
-                # interpolate all model depths to clm5 depths by cubic spline interpolation/extrapolation
-                #like_array = xr.DataArray(clm_soild, dims=['SoilDepth'], coords={'SoilDepth': clm_soild})
-                #fake_data = np.zeros(len(clm_soild))
-                #like_array = xr.DataArray(
-                #                data=fake_data,
-                #                dims=['SoilDepth'],
-                #                coords={'SoilDepth': clm_soild})
                 # mask with clm5 landmask
                 with xr.open_dataset(config['output_dir']+'zarr_output/clm5_landmask.nc') as clm5_landinfo:
                     clm5_landmask = clm5_landinfo['landmask']
@@ -4730,13 +4817,7 @@ def harmonize_regional_models(config):
                     del ds_soiltemp_interp, ds_soilmoist_interp
                     # replace soilDepth dim with integers
                     ds = ds.assign_coords({'SoilDepth': range(0,len(clm_soild))})
-                    #ds = ds.assign_coords({'SoilDepth': range(0,15)})
-                    #ds = ds.reindex({'SoilDepth': clm_soild}) #range(0,len(clm_soild))})
-                    #ds['SoilTemp'].loc[:] = np.nan
-            #if config['model_name'] == 'UVic-ESCM':
-            #    # resample to daily timestep
-            #    ds = ds.resample(time='1D').asfreq()
-            #    ds = ds.transpose('model','sim','time','SoilDepth','lat','lon', missing_dims='ignore')
+            # calculate 10cm soil temp and moisture if CLM5
             if config['model_name'] in ['CLM5','CLM5-ExIce']:
                 # replace soilDepth dim with integers
                 ds = ds.assign_coords({'SoilDepth': range(0,len(clm_soild))})
@@ -4745,8 +4826,10 @@ def harmonize_regional_models(config):
                 weights = xr.DataArray([0.2,0.4,0.4], dims=('SoilDepth',), coords=coords)
                 ds['10cm_SoilTemp'] = ds['SoilTemp'].isel(SoilDepth = [0,1,2]).weighted(weights).mean(dim='SoilDepth')
                 ds['10cm_SoilMoist'] = ds['SoilMoist'].isel(SoilDepth = [0,1,2]).weighted(weights).mean(dim='SoilDepth')
+            # fix orchidee monthly data by forward filling to daily
             if config['model_name'] in ['ORCHIDEE-MICT-teb','UVic-ESCM']:
                 ds = ds.resample(time='1D').ffill()
+            # transpose all datasets into same vairable order for alignment
             ds = ds.transpose('model','sim','time','SoilDepth','lat','lon', missing_dims='ignore')
             # reindex time from 2000-01-01 00:00:00 to 2021-12-31 00:00:00
             ds = ds.reindex({'time': xr.cftime_range(start='2000-01-01 00:00:00', end='2022-12-31 00:00:00', freq='D', calendar='noleap')})
@@ -4968,8 +5051,10 @@ def harmonized_netcdf_output(config, agg='daily', by='year', subset_model_list=[
                     ds[var] = ds[var].assign_attrs(description='Soil temperature by layer', units='°C', _FillValue='nan')
                 elif var == '10cm_SoilTemp':
                     ds[var] = ds[var].assign_attrs(description='Soil temperature, 10cm weighted mean', units='°C', _FillValue='nan')
+                    ds = ds.rename({"10cm_SoilTemp":"SoilTemp_10cm"})
                 elif var == '10cm_SoilMoist':
                     ds[var] = ds[var].assign_attrs(description='Soil Moisture, 10cm weighted mean', units='g/m2', _FillValue='nan')
+                    ds = ds.rename({"10cm_SoilMoist":"SoilMoist_10cm"})
                 elif var == 'AirTemp':
                     ds[var] = ds[var].assign_attrs(description='Near-surface air temperature', units='°C', _FillValue='nan')
                 elif var == 'VegTemp':
@@ -4978,12 +5063,18 @@ def harmonized_netcdf_output(config, agg='daily', by='year', subset_model_list=[
                     ds[var] = ds[var].assign_attrs(description='Active layer thickness (positive into the soil)', units='m', _FillValue='nan')
                 elif var == 'WTD':
                     ds[var] = ds[var].assign_attrs(description='Water table depth (perched and non-perched models combined)', units='m', _FillValue='nan')
-                elif var == 'SoilC':
-                    ds[var] = ds[var].assign_attrs(description='Total soil carbon', units='gC/m2', _FillValue='nan')
-                elif var == 'SoilN':
-                    ds[var] = ds[var].assign_attrs(description='Total soil nitrogen', units='gC/m2', _FillValue='nan')
-                elif var == 'CN':
-                    ds[var] = ds[var].assign_attrs(description='Carbon to nitrogen ratio', units='unitless', _FillValue='nan')
+                elif var == 'SoilC_Total':
+                    ds[var] = ds[var].assign_attrs(description='Total soil column soil organic carbon', units='gC/m2', _FillValue='nan')
+                elif var == 'SoilC_1m':
+                    ds[var] = ds[var].assign_attrs(description='Total soil organic carbon to 1 meter depth', units='gC/m2', _FillValue='nan')
+                elif var == 'SoilN_Total':
+                    ds[var] = ds[var].assign_attrs(description='Total soil column soil organic nitrogen', units='gC/m2', _FillValue='nan')
+                elif var == 'SoilN_1m':
+                    ds[var] = ds[var].assign_attrs(description='Total soil organic nitrogen to 1 meter depth', units='gC/m2', _FillValue='nan')
+                elif var == 'CN_Total':
+                    ds[var] = ds[var].assign_attrs(description='Carbon to nitrogen ratio of entire soil column', units='unitless', _FillValue='nan')
+                elif var == 'CN_1m':
+                    ds[var] = ds[var].assign_attrs(description='Carbon to nitrogen ratio of soil to 1m depth', units='unitless', _FillValue='nan')
             ds.attrs = {
                 'Date': date.today().strftime("%B %d, %Y"),
                 'Creator': 'Jon M Wells (jon.wells@nau.edu)',

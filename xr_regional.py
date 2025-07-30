@@ -68,13 +68,12 @@ def main():
         L_rm = [client.submit(xrfx.harmonize_regional_models, f) for f in model_config_list]
         wait(L_rm)
         del L_rm
-        # # aggregate all harmonized models into single zarr database
-        # with open(Path(config['output_dir'] + 'zarr_output/debug_agg_harm_models.txt'), 'w') as pf:
-        #     print('starting final harmonized aggregation', file=pf)
-        # L_rm2 = [client.submit(xrfx.aggregate_regional_models, model_config_list)]
-        # wait(L_rm2)
-        # del L_rm2
-
+        # aggregate all harmonized models into single zarr database
+        with open(Path(config['output_dir'] + 'zarr_output/debug_agg_harm_models.txt'), 'w') as pf:
+            print('starting final harmonized aggregation', file=pf)
+        L_rm2 = [client.submit(xrfx.aggregate_regional_models, model_config_list)]
+        wait(L_rm2)
+        del L_rm2
         # # # # output netcdfs as needed and for final publication/sharing
         # # # L_nc1 = [client.submit(xrfx.regional_model_zarrs_to_netcdfs, f) for f in itertools.product(model_config_list, range(2000,2022))]
         # # # wait(L_nc1)
@@ -83,10 +82,10 @@ def main():
         # # # wait(L_nc2)
         # # # L_nc3 = [client.submit(xrfx.harmonized_totalresp_netcdf, config)]
         # # # wait(L_nc3)
-        # wait([client.submit(xrfx.harmonized_netcdf_output, config, agg='daily', by='model', \
-        #     subset_model_list=[], \
-        #     subset_sim_list=['b2'], \
-        #     subset_var_list=['TotalResp','10cm_SoilTemp'])])
+        wait([client.submit(xrfx.harmonized_netcdf_output, config, agg='monthly', by='model', \
+            subset_model_list=[], \
+            subset_sim_list=[], \
+            subset_var_list=[])])
         # # # del L_nc1, L_nc2, L_nc3, L_nc4
         # # # graph regional outputs from harmonized zarr database
         # # var_list = ['GPP','TotalResp','SoilTemp','ALT','WTD','NEE','SoilC','SoilN','CN']
