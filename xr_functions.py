@@ -5022,8 +5022,6 @@ def harmonized_netcdf_output(config, agg='daily', by='year', subset_model_list=[
             # adjust lon from 0 to 360 to -180 to 180
             ds = ds.assign_coords({'lon': (((ds.lon + 180) % 360) - 180)})
             ds = ds.sortby('lon', ascending=True)
-            # rename dims
-            ds = ds.rename({'lat':'latitude', 'lon':'longitude'})
             # subset models if subset_list given
             if subset_model_list:
                 ds = ds.sel(model = subset_model_list) 
@@ -5036,166 +5034,101 @@ def harmonized_netcdf_output(config, agg='daily', by='year', subset_model_list=[
                 ds = ds.resample(time='MS').mean()
                 ds = ds.transpose('model','sim','time','SoilDepth','lat','lon', missing_dims='ignore')
                 ds = ds.chunk({'model':1, 'sim':1, 'time':-1, 'SoilDepth': 25, 'lat':60, 'lon':720})
+            # rename dims
+            ds = ds.rename({
+                    'lat':'latitude', 
+                    'lon':'longitude', 
+                    '10cm_SoilTemp':'SoilTemp_10cm',
+                    '10cm_SoilMoist':'SoilMoist_10cm'})
             # create empty encoding dictionary
             encoding_options = dict()
             # set fill value
-            fill_value = 1e20
+            fill_value = -9999
             # loop through existing variables
-            for var in ds:
+            for var in ds.data_vars:
+                with open(Path(config['output_dir'] + 'netcdf_output/debug_model_netcdfs.txt'), 'a') as pf:
+                    print(ds[var].encoding, file=pf)
                 # clear variable encoding and attributes
-                ds[var].drop_encoding()
-                ds[var].drop_attrs()
+                ds[var] = ds[var].drop_encoding()
+                ds[var] = ds[var].drop_attrs()
                 # set individual attribute and encoding for each variable
                 if var == 'AutoResp':
                     # variable attributes
                     ds[var] = ds[var].assign_attrs(standard_name='Autotrophic Respiration', \
                                                    description='Autotrophic ecosystem respiration rate (always positive)', \
-                                                   units='gC m-2 d-1', missing_value=fill_value)
-                    # encoding for individual variable
-                    encoding_options[var] = {zlib=config['nc_write']['zlib'], shuffle=config['nc_write']['shuffle'],\
-                                             complevel=config['nc_write']['complevel'], _FillValue=fill_value, dtype='float32'}
+                                                   units='gC m-2 d-1')
                 elif var == 'HeteroResp':
-                    # variable attributes
                     ds[var] = ds[var].assign_attrs(standard_name='Heterotrophic Respiration', \
                                                    description='Heterotrophic ecosystem respiration rate (always positive)', \
-                                                   units='gC m-2 d-1', missing_value=fill_value)
-                    # encoding for individual variable
-                    encoding_options[var] = {zlib=config['nc_write']['zlib'], shuffle=config['nc_write']['shuffle'],\
-                                             complevel=config['nc_write']['complevel'], _FillValue=fill_value, dtype='float32'}
+                                                   units='gC m-2 d-1')
                 elif var == 'TotalResp':
-                    # variable attributes
                     ds[var] = ds[var].assign_attrs(standard_name='Ecosystem Respiration', \
                                                    description='Total ecosystem respiration rate (always positive)', \
-                                                   units='gC m-2 d-1', missing_value=fill_value)
-                    # encoding for individual variable
-                    encoding_options[var] = {zlib=config['nc_write']['zlib'], shuffle=config['nc_write']['shuffle'],\
-                                             complevel=config['nc_write']['complevel'], _FillValue=fill_value, dtype='float32'}
+                                                   units='gC m-2 d-1')
                 elif var == 'GPP':
-                    # variable attributes
                     ds[var] = ds[var].assign_attrs(standard_name='Gross Primary Production', \
                                                    description='Gross primary productivity rate (always positive)', \
-                                                   units='gC m-2 d-1', missing_value=fill_value)
-                    # encoding for individual variable
-                    encoding_options[var] = {zlib=config['nc_write']['zlib'], shuffle=config['nc_write']['shuffle'],\
-                                             complevel=config['nc_write']['complevel'], _FillValue=fill_value, dtype='float32'}
+                                                   units='gC m-2 d-1')
                 elif var == 'NEE':
-                    # variable attributes
                     ds[var] = ds[var].assign_attrs(standard_name='Net Ecosystem Exchange', \
                                                    description='Net ecosystem exchange rate (positive to atmosphere)', \
-                                                    units='gC m-2 d-1', missing_value=fill_value)
-                    # encoding for individual variable
-                    encoding_options[var] = {zlib=config['nc_write']['zlib'], shuffle=config['nc_write']['shuffle'],\
-                                             complevel=config['nc_write']['complevel'], _FillValue=fill_value, dtype='float32'}
+                                                    units='gC m-2 d-1')
                 elif var == 'SoilMoist':
-                    # variable attributes
                     ds[var] = ds[var].assign_attrs(standard_name='Soil Moisture', \
-                                                   description='Soil moisture by layer', units='gH2O m-2', missing_value=fill_value)
-                    # encoding for individual variable
-                    encoding_options[var] = {zlib=config['nc_write']['zlib'], shuffle=config['nc_write']['shuffle'],\
-                                             complevel=config['nc_write']['complevel'], _FillValue=fill_value, dtype='float32'}
+                                                   description='Soil moisture by layer', \
+                                                   units='gH2O m-2')
                 elif var == 'SoilTemp':
-                    # variable attributes
                     ds[var] = ds[var].assign_attrs(standard_name='Soil Temperature', \
-                                                   description='Soil temperature by layer', units='°C', missing_value=fill_value)
-                    # encoding for individual variable
-                    encoding_options[var] = {zlib=config['nc_write']['zlib'], shuffle=config['nc_write']['shuffle'],\
-                                             complevel=config['nc_write']['complevel'], _FillValue=fill_value, dtype='float32'}
-                elif var == '10cm_SoilTemp':
-                    # variable attributes
-                    ds[var] = ds[var].assign_attrs(standard_name='10cm Soil Temperature' , \
+                                                   description='Soil temperature by layer', \
+                                                   units='C')
+                elif var == 'SoilTemp_10cm':
+                    ds[var] = ds[var].assign_attrs(standard_name='Soil Temperature 10cm' , \
                                                    description='Soil temperature, 10cm weighted mean', \
-                                                   units='°C', missing_value=fill_value)
-                    ds = ds.rename({"10cm_SoilTemp":"SoilTemp_10cm"})
-                    # encoding for individual variable
-                    encoding_options[var] = {zlib=config['nc_write']['zlib'], shuffle=config['nc_write']['shuffle'],\
-                                             complevel=config['nc_write']['complevel'], _FillValue=fill_value, dtype='float32'}
-                elif var == '10cm_SoilMoist':
-                    # variable attributes
-                    ds[var] = ds[var].assign_attrs(standard_name='10cm Soil Moisture', \
+                                                   units='C')
+                elif var == 'SoilMoist_10cm':
+                    ds[var] = ds[var].assign_attrs(standard_name='Soil Moisture 10cm', \
                                                    description='Soil Moisture, 10cm weighted mean', \
-                                                   units='g m-2', missing_value=fill_value)
-                    ds = ds.rename({"10cm_SoilMoist":"SoilMoist_10cm"})
-                    # encoding for individual variable
-                    encoding_options[var] = {zlib=config['nc_write']['zlib'], shuffle=config['nc_write']['shuffle'],\
-                                             complevel=config['nc_write']['complevel'], _FillValue=fill_value, dtype='float32'}
+                                                   units='g m-2')
                 elif var == 'AirTemp':
-                    # variable attributes
                     ds[var] = ds[var].assign_attrs(standard_name='Air Temperature', \
-                                                   description='Near-surface air temperature', units='°C', missing_value=fill_value)
-                    # encoding for individual variable
-                    encoding_options[var] = {zlib=config['nc_write']['zlib'], shuffle=config['nc_write']['shuffle'],\
-                                             complevel=config['nc_write']['complevel'], _FillValue=fill_value, dtype='float32'}
+                                                   description='Near-surface air temperature', \
+                                                   units='C')
                 elif var == 'VegTemp':
-                    # variable attributes
-                    ds[var] = ds[var].assign_attrs(standard_name='Vegetation Temperature'. \
-                                                   description='Vegetation temperature', units='°C', missing_value=fill_value)
-                    # encoding for individual variable
-                    encoding_options[var] = {zlib=config['nc_write']['zlib'], shuffle=config['nc_write']['shuffle'],\
-                                             complevel=config['nc_write']['complevel'], _FillValue=fill_value, dtype='float32'}
+                    ds[var] = ds[var].assign_attrs(standard_name='Vegetation Temperature', \
+                                                   description='Vegetation temperature', \
+                                                   units='C')
                 elif var == 'ThawDepth':
-                    # variable attributes
                     ds[var] = ds[var].assign_attrs(standard_name='Thaw Depth', \
                                                    description='Instantaneous depth of soil thaw (positive into the soil)', \
-                                                   units='m', missing_value=fill_value)
-                    # encoding for individual variable
-                    encoding_options[var] = {zlib=config['nc_write']['zlib'], shuffle=config['nc_write']['shuffle'],\
-                                             complevel=config['nc_write']['complevel'], _FillValue=fill_value, dtype='float32'}
+                                                   units='m')
                 elif var == 'WTD':
-                    # variable attributes
                     ds[var] = ds[var].assign_attrs(standard_name='Water Table Depth', \
                                                    description='Water table depth (both perched and non-perched depending on model)', \
-                                                   units='m', missing_value=fill_value)
-                    # encoding for individual variable
-                    encoding_options[var] = {zlib=config['nc_write']['zlib'], shuffle=config['nc_write']['shuffle'],\
-                                             complevel=config['nc_write']['complevel'], _FillValue=fill_value, dtype='float32'}
+                                                   units='m')
                 elif var == 'SoilC_Total':
-                    # variable attributes
                     ds[var] = ds[var].assign_attrs(standard_name='Total Soil Organic Carbon', \
-                                                   description='Cummulative soil organic carbon of entire soil column', \
-                                                   units='gC m-2', missing_value=fill_value)
-                    # encoding for individual variable
-                    encoding_options[var] = {zlib=config['nc_write']['zlib'], shuffle=config['nc_write']['shuffle'],\
-                                             complevel=config['nc_write']['complevel'], _FillValue=fill_value, dtype='float32'}
+                                                   description='Cumulative soil organic carbon of entire soil column', \
+                                                   units='gC m-2')
                 elif var == 'SoilC_1m':
-                    # variable attributes
                     ds[var] = ds[var].assign_attrs(standard_name='1m Soil Organic Carbon', \
-                                                   description='Cummulative soil organic carbon to 1 meter depth', \
-                                                   units='gC m-2', missing_value=fill_value)
-                    # encoding for individual variable
-                    encoding_options[var] = {zlib=config['nc_write']['zlib'], shuffle=config['nc_write']['shuffle'],\
-                                             complevel=config['nc_write']['complevel'], _FillValue=fill_value, dtype='float32'}
+                                                   description='Cumulative soil organic carbon to 1 meter depth', \
+                                                   units='gC m-2')
                 elif var == 'SoilN_Total':
-                    # variable attributes
                     ds[var] = ds[var].assign_attrs(standard_name='Total Soil Organic Nitrogen', \
-                                                   description='Cummulative soil organic nitrogen of entire soil column', \
-                                                   units='gC m-2', missing_value=fill_value)
-                    # encoding for individual variable
-                    encoding_options[var] = {zlib=config['nc_write']['zlib'], shuffle=config['nc_write']['shuffle'],\
-                                             complevel=config['nc_write']['complevel'], _FillValue=fill_value, dtype='float32'}
+                                                   description='Cumulative soil organic nitrogen of entire soil column', \
+                                                   units='gC m-2')
                 elif var == 'SoilN_1m':
-                    # variable attributes
                     ds[var] = ds[var].assign_attrs(standard_name='1m Soil Organic Nitrogen', \
-                                                   description='Cummulative soil organic nitrogen to 1 meter depth', \
-                                                   units='gC m-2', missing_value=fill_value)
-                    # encoding for individual variable
-                    encoding_options[var] = {zlib=config['nc_write']['zlib'], shuffle=config['nc_write']['shuffle'],\
-                                             complevel=config['nc_write']['complevel'], _FillValue=fill_value, dtype='float32'}
+                                                   description='Cumulative soil organic nitrogen to 1 meter depth', \
+                                                   units='gC m-2')
                 elif var == 'CN_Total':
-                    # variable attributes
                     ds[var] = ds[var].assign_attrs(standard_name='Total CN Ratio', \
                                                    description='Carbon to nitrogen ratio of total soil column carbon and nitrogen values', \
-                                                   units='unitless', missing_value=fill_value)
-                    # encoding for individual variable
-                    encoding_options[var] = {zlib=config['nc_write']['zlib'], shuffle=config['nc_write']['shuffle'],\
-                                             complevel=config['nc_write']['complevel'], _FillValue=fill_value, dtype='float32'}
+                                                   units='unitless')
                 elif var == 'CN_1m':
-                    # variable attributes
                     ds[var] = ds[var].assign_attrs(standard_name='1m CN ratio', \
                                                    description='Carbon to nitrogen ratio of 1m soil carbon and nitrogen values', \
-                                                   units='unitless', missing_value=fill_value)
-                    # encoding for individual variable
-                    encoding_options[var] = {zlib=config['nc_write']['zlib'], shuffle=config['nc_write']['shuffle'],\
-                                             complevel=config['nc_write']['complevel'], _FillValue=fill_value, dtype='float32'}
+                                                   units='unitless')
             ds.attrs = {
                 'Date': date.today().strftime("%B %d, %Y"),
                 'Creator': 'Jon M Wells (jon.wells@nau.edu)',
@@ -5205,6 +5138,19 @@ def harmonized_netcdf_output(config, agg='daily', by='year', subset_model_list=[
             ds = ds.persist()
             ds_list = []
             ncdf_list =[]
+            # encoding for individual variable
+            encoding = dict(zlib=config['nc_write']['zlib'], \
+                            shuffle=config['nc_write']['shuffle'],\
+                            complevel=config['nc_write']['complevel'], \
+                            missing_value=fill_value, dtype='float64')
+            var_encoding = {var: encoding for var in ds.data_vars}
+            with open(Path(config['output_dir'] + 'netcdf_output/debug_model_netcdfs.txt'), 'a') as pf:
+                print(ds, file=pf)
+                print(ds.model.values, file=pf)
+                print(ds.sim.values, file=pf)
+                print(ds.data_vars, file=pf)
+                print('encoding:', file=pf)
+                print(var_encoding, file=pf)
             if by == 'year':
                 for year in np.arange(2000,2022):
                     ds_tmp = ds.sel(time=slice(f"{year}-01-01", f"{year}-12-31"))
@@ -5214,12 +5160,25 @@ def harmonized_netcdf_output(config, agg='daily', by='year', subset_model_list=[
             elif by == 'model':
                 for model in ds.model.values:
                     for sim in ds.sim.values:
-                        for var in ds:
-                            ds_tmp = ds[var].sel(model=model, sim=sim)
-                            ncdf_out = config['output_dir'] + 'netcdf_output/WrPMIP_' + str(model) + '_' + str(sim) + '_' + str(var) + '_' + str(agg) + '_means.nc'
+                        for var in ds.data_vars:
+                            ds_tmp = ds[var].sel(model=model, sim=sim, drop=True).to_dataset()
+                            ds_tmp[var].encoding = encoding
+                            ncdf_out = config['output_dir']+'netcdf_output/WrPMIP_'+str(model)+'_'+str(sim)+'_'+str(var)+'_'+str(agg)+'_means.nc'
                             ds_list.append(ds_tmp)
                             ncdf_list.append(ncdf_out)
-            xr.save_mfdataset(ds_list, ncdf_list, mode='w', encoding=encoding_options, \
+                            with open(Path(config['output_dir'] + 'netcdf_output/debug_model_netcdfs.txt'), 'a') as pf:
+                                print("ds_tmp:", file=pf)
+                                print(ds_tmp, file=pf)
+                                print(ds_tmp.encoding, file=pf)
+                                print(ds_tmp[var].encoding, file=pf)
+                                print(ds_tmp.attrs, file=pf)
+                                print(ds_tmp[var].attrs, file=pf)
+            with open(Path(config['output_dir'] + 'netcdf_output/debug_model_netcdfs.txt'), 'a') as pf:
+                 print("ds_tmp list:", file=pf)
+                 print(ds_list, file=pf)
+                 print("ncdf list:", file=pf)
+                 print(ncdf_list, file=pf)
+            xr.save_mfdataset(ds_list, ncdf_list, mode='w', \
                               format=config['nc_write']['format'], engine=config['nc_write']['engine'])
     except Exception as error:
         with open(Path(config['output_dir'] + 'netcdf_output/debug_model_netcdfs.txt'), 'a') as pf:

@@ -19,7 +19,7 @@
 		"HeteroResp",
 		"TotalResp",
 		"SoilTemp",
-		"ALT",
+		"thaw",
 		"SoilC_Total"
 	],
 	"rename_subset": {
